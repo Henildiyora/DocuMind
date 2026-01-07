@@ -1,0 +1,11 @@
+langchain
+langchain-google-genai
+langchain-community
+langchain-pinecone
+pinecone
+python-dotenv
+pypdf
+tiktoken
+langsmith
+langchain-huggingface
+sentence-transformers
