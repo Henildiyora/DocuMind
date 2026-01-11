@@ -1,109 +1,171 @@
 import os 
+import glob
 from dotenv import load_dotenv
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import TextLoader, PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter, Language
 from pinecone import Pinecone, ServerlessSpec
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
-import time 
 
 # Load secrets from .env file
 load_dotenv()
+
+SUPPORTED_EXTENSIONS = {
+    # Code
+    ".py", ".js", ".ts", ".jsx", ".tsx", 
+    ".java", ".cpp", ".c", ".h", ".cs", 
+    ".go", ".rs", ".php", ".rb", ".swift", 
+    # Config & Web
+    ".json", ".yaml", ".yml", ".toml", ".xml",
+    ".html", ".css", ".scss",
+    ".sql", ".md", ".txt"
+}
+
+IGNORE_DIRS = {
+    "venv", ".venv", "env", "DocuMind_venv",
+    "__pycache__", ".git", ".idea", ".vscode",
+    "node_modules", "site-packages", "dist-packages",
+    "build", "dist", "bin", "obj", "target", "include", "lib"
+}
 
 class IngestionPipeline:
     '''
     A pipeline to ingest documents into Pinecone vector store.
     '''
 
-    def __init__(self,pinecone_api_key:str = None, index_name:str = "index-v1", embedding_dimension:int = None):
-
+    def __init__(self, pinecone_api_key:str, index_name:str, embedding_dimension:int):
         self.PINECONE_API_KEY = pinecone_api_key
         self.INDEX_NAME = index_name
         self.EMBEDDING_DIMENSION = embedding_dimension
+        
         if not self.PINECONE_API_KEY:
             raise ValueError("API keys not found. Please set them in the .env file.")
         
-        # Check the tracking status
-        self.langchain_api_key = os.getenv("LANGCHAIN_API_KEY")
-        tracing_status = os.getenv("LANGCHAIN_TRACING_V2")
-        if tracing_status == "true" and self.langchain_api_key:
-            print(" LangSmith Tracing is ENABLED. Your runs will be recorded.")
-        else:
-            print(" LangSmith Tracing is DISABLED. Add LANGCHAIN_API_KEY to .env to track runs.")
-        
-        
-        # Ensure Index Exists
+        self.pc = Pinecone(api_key=self.PINECONE_API_KEY)
         self._ensure_index_exists()
 
     def _ensure_index_exists(self):
-        '''
-        Ensure that the Pinecone index exists, create it if it does not.
-        '''
-
-        # Initilializing pinecone
-        pc = Pinecone(api_key=self.PINECONE_API_KEY)
-
-        existing_indexes = [index.name for index in pc.list_indexes()]
+        existing_indexes = [index.name for index in self.pc.list_indexes()]
 
         if self.INDEX_NAME not in existing_indexes:
             print(f"Creating index: {self.INDEX_NAME}")
-            pc.create_index(
+            self.pc.create_index(
                 name=self.INDEX_NAME,
                 dimension=self.EMBEDDING_DIMENSION, 
                 metric="cosine",
-                spec=ServerlessSpec(
-                    cloud="aws",
-                    region="us-east-1",
-                )
+                spec=ServerlessSpec(cloud="aws", region="us-east-1")
             )
             print(f"Index {self.INDEX_NAME} created.")
         else:
-            print(f"Index {self.INDEX_NAME} already exists.")
+            print(f"Index {self.INDEX_NAME} found.")
 
-    def run(self,file_path:str):
-        '''
-        Run the ingestion pipeline.
-        '''
-        # Load the pdfs 
-        print("Loading documents")
-        raw_docs = self._load_documents(file_path)
-        print(f"Loaded {len(raw_docs)} pages.")
+    def run(self, directory_path:str):
+        print(f"\n Starting Ingestion for: {directory_path}")
+        
+        # 1. Clear Old Data
+        index = self.pc.Index(self.INDEX_NAME)
+        try:
+            print("Clearing old vector data...")
+            index.delete(delete_all=True)
+        except Exception as e:
+            print(f"Warning during delete: {e}")
 
-        # Split the documents into chunks
-        print("Splitting documents into chunks")
-        documents = self._split_documents(raw_docs)
-        print(f"Split into {len(documents)} chunks.")
+        # 2. Load Documents
+        pdf_docs = self._load_documents(directory_path)
+        print(f"Loaded {len(pdf_docs)} PDF pages.")
 
-        # Store the documents in Pinecone
-        print(f"Embedding and Storing on index : {self.INDEX_NAME}")
-        self._store_in_pinecone(documents)
-        print("Ingestion complete.")
+        code_docs = self._load_code(directory_path)
+        print(f"Loaded {len(code_docs)} code files.")
 
-    def _load_documents(self,file_path:str):
-        '''
-        Load documents from the given file path.
-        '''
-        loader = PyPDFLoader(file_path)
-        return loader.load()
-    
-    def _split_documents(self,documents):
-        '''
-        Split documents into smaller chunks.
-        '''
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-        )
+        # 3. Split
+        chunks = []
+        if pdf_docs:
+            print("Splitting PDFs...")
+            chunks.extend(self._split_documents(pdf_docs))
+        
+        if code_docs:
+            print("Splitting Code...")
+            chunks.extend(self._split_code(code_docs))
+            
+        print(f"Total chunks created: {len(chunks)}")
+
+        # 4. Store
+        if chunks:
+            print(f"Embedding and Storing in Pinecone Index: {self.INDEX_NAME}...")
+            self._store_in_pinecone(chunks)
+            print("Ingestion complete successfully.")
+        else:
+            print("No documents found to ingest.")
+
+    def _load_documents(self, directory_path:str):
+        docs = []
+        if os.path.isfile(directory_path) and directory_path.endswith(".pdf"):
+             files = [directory_path]
+        else:
+             files = glob.glob(f"{directory_path}/**/*.pdf", recursive=True)
+             
+        for file in files:
+            # Skipping ignores
+            if any(ign in file for ign in IGNORE_DIRS): 
+                continue
+
+            try:
+                loader = PyPDFLoader(file_path=file)
+                loaded_docs = loader.load()
+                for doc in loaded_docs:
+                    doc.metadata["source_type"] = "document"
+                    doc.metadata["file_path"] = file
+                docs.extend(loaded_docs)
+            except Exception as e:
+                print(f" Error loading document {file}: {e}")
+        return docs
+
+    def _load_code(self, directory_path:str):
+        docs = []
+        if os.path.isfile(directory_path):
+             files = [directory_path]
+        else:
+             files = glob.glob(f"{directory_path}/**/*", recursive=True)
+
+        for file in files:
+            # Skip Directories
+            if os.path.isdir(file): continue
+
+            # Skip Ignored Folders
+            # We split path parts to ensure we don't accidentally match a filename like "env.py"
+            parts = file.split(os.sep)
+            if any(part in IGNORE_DIRS for part in parts):
+                continue
+            
+            # Check Extension
+            _, ext = os.path.splitext(file)
+            if ext.lower() not in SUPPORTED_EXTENSIONS:
+                continue
+
+            try: 
+                loader = TextLoader(file_path=file, encoding="utf-8")
+                loaded_docs = loader.load()
+                for doc in loaded_docs:
+                    doc.metadata["source_type"] = "code"
+                    doc.metadata["file_path"] = file
+                    doc.metadata["language"] = ext.replace(".", "")
+                docs.extend(loaded_docs)
+            except Exception as e:
+                print(f" Warning: Could not load {file}: {e}")
+        return docs
+
+    def _split_documents(self, documents):
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         return text_splitter.split_documents(documents)
     
-    def _store_in_pinecone(self,documents):
-        '''
-        Embed and store documents in Pinecone.
-        '''
-        # Embed and store the documents in Pinecone
-        print("Embedding and storing documents in Pinecone")
+    def _split_code(self, documents):
+        code_splitter = RecursiveCharacterTextSplitter.from_language(
+            language=Language.PYTHON, chunk_size=1000, chunk_overlap=200
+        )
+        return code_splitter.split_documents(documents)
+    
+    def _store_in_pinecone(self, documents):
         embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-
         PineconeVectorStore.from_documents(
             documents=documents,
             embedding=embeddings,
@@ -114,11 +176,10 @@ class IngestionPipeline:
 if __name__ == "__main__":
 
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-    INDEX_NAME = "documind-index"
+    INDEX_NAME = "documind-code-docs-index"
     EMBEDDING_DIMENSION = 384 # We use 384 dimensions because that is the output size of HuggingFace's embedding model.
-    FILE_PATH = "data/sample.pdf"  # Path to the PDF file to be ingested.
-
+    ROOT_DIR = "./"
     pipeline = IngestionPipeline(pinecone_api_key=PINECONE_API_KEY, 
                                  index_name=INDEX_NAME, 
                                  embedding_dimension=EMBEDDING_DIMENSION)
-    pipeline.run(file_path=FILE_PATH)
+    pipeline.run(directory_path=ROOT_DIR)

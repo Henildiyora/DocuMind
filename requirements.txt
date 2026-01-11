@@ -1,11 +1,12 @@
 langchain
-langchain-google-genai
 langchain-community
+langchain-core
+langchain-google-genai
 langchain-pinecone
+langchain-huggingface
 pinecone
 python-dotenv
 pypdf
 tiktoken
-langsmith
-langchain-huggingface
 sentence-transformers
+langsmith
