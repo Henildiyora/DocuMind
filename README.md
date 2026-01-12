@@ -14,6 +14,7 @@ Run DocuMind on **any** codebase in seconds without installing Python or managin
 ### 1. Prerequisites
 * Docker Desktop installed.
 * A `.env` file in your project root with your API keys:
+
     ```bash
     PINECONE_API_KEY=your_key_here
     GOOGLE_API_KEY=your_key_here
@@ -61,7 +62,7 @@ Problem: Reading a 2,000-line file to find one function wastes time and tokens. 
 
 Agent extracting code structure without reading the full file content.
 
-## 3. Deep Logic & Security (The Hands)
+## 3. Deep Logic & Security
 
 Problem: A keyword search can't tell you if a variable is secure, only where it is. Solution: DocuMind reads the actual logic to verify security compliance (e.g., ensuring API keys are not hardcoded).
 
@@ -69,7 +70,7 @@ Problem: A keyword search can't tell you if a variable is secure, only where it 
 
 Agent verifying environment variable security compliance.
 
-## 4. Contextual Memory (The Brain)
+## 4. Contextual Memory
 
 Problem: Standard search tools don't remember your last query. Solution: DocuMind maintains conversation history. If you ask "Are they used for vector storage?", it knows exactly what "they" refers to.
 
