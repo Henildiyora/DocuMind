@@ -62,22 +62,22 @@ class IngestionPipeline:
     def run(self, directory_path:str):
         print(f"\n Starting Ingestion for: {directory_path}")
         
-        # 1. Clear Old Data
+        # Clear old data
         index = self.pc.Index(self.INDEX_NAME)
         try:
-            print("Clearing old vector data...")
+            print("Clearing old vector data")
             index.delete(delete_all=True)
         except Exception as e:
             print(f"Warning during delete: {e}")
 
-        # 2. Load Documents
+        # Load documents
         pdf_docs = self._load_documents(directory_path)
         print(f"Loaded {len(pdf_docs)} PDF pages.")
 
         code_docs = self._load_code(directory_path)
         print(f"Loaded {len(code_docs)} code files.")
 
-        # 3. Split
+        # Split
         chunks = []
         if pdf_docs:
             print("Splitting PDFs...")
@@ -89,7 +89,7 @@ class IngestionPipeline:
             
         print(f"Total chunks created: {len(chunks)}")
 
-        # 4. Store
+        # Store
         if chunks:
             print(f"Embedding and Storing in Pinecone Index: {self.INDEX_NAME}...")
             self._store_in_pinecone(chunks)
@@ -128,16 +128,16 @@ class IngestionPipeline:
              files = glob.glob(f"{directory_path}/**/*", recursive=True)
 
         for file in files:
-            # Skip Directories
+            # Skip directories
             if os.path.isdir(file): continue
 
-            # Skip Ignored Folders
+            # Skip ignored folders
             # We split path parts to ensure we don't accidentally match a filename like "env.py"
             parts = file.split(os.sep)
             if any(part in IGNORE_DIRS for part in parts):
                 continue
-            
-            # Check Extension
+
+            # Check extension
             _, ext = os.path.splitext(file)
             if ext.lower() not in SUPPORTED_EXTENSIONS:
                 continue

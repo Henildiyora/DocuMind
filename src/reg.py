@@ -58,7 +58,7 @@ def read_specific_file(file_path: str):
     try:
         with open(real_path, "r", encoding="utf-8", errors='ignore') as f:
             content = f.read()
-            return f"Content of {real_path}:\n{content[:20000]}..." # Truncate large files
+            return f"Content of {real_path}:\n{content[:20000]}" 
     except Exception as e: return f"Error: {e}"
 
 @tool
@@ -126,10 +126,10 @@ class RAGEngine:
     def __init__(self, index_name:str = None, google_api_key:str = None, pinecone_api_key:str = None):
         if not google_api_key or not pinecone_api_key: raise ValueError("Missing API Keys")
         
-        # Setup Memory
+        # Setup memory
         self.chat_history = []
 
-        # 2. Setup Vector Store
+        # Setup vector store
         print("Initializing Knowledge Base")
         self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
         self.vector_store = PineconeVectorStore(index_name=index_name, embedding=self.embeddings, pinecone_api_key=pinecone_api_key)
@@ -144,13 +144,13 @@ class RAGEngine:
 
         self.tools = [semantic_knowledge_search, exact_code_search, list_project_files, read_specific_file, get_file_structure, git_history_check, check_installed_packages, write_to_file]
 
-        # 3. Setup LLM & Agent
+        # Setup LLM & Agent
         print("Initializing Language Model")
         self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", 
                                           temperature=0, 
                                           google_api_key=google_api_key)
 
-        # 4. Smart System Prompt (Fixes the "Hardcoded Variable" & "Typo" issues)
+        # Smart system prompt
         system_prompt = """You are DocuMind, an expert Senior Software Engineer.
         
         ### MEMORY & CONTEXT
@@ -176,18 +176,18 @@ class RAGEngine:
     def ask(self, query:str = None):
         print(f"Agent thinking about: {query}")
         
-        # Append User Message to History
+        # Append user message to history
         self.chat_history.append(HumanMessage(content=query))
         
-        # Keep History Short (Prevent Token Overflow)
+        # Keep history short
         if len(self.chat_history) > 10: 
             self.chat_history = self.chat_history[-10:]
 
-        # Invoke Agent with History
+        # Invoke Agent with history
         inputs = {"messages": self.chat_history}
         result = self.agent_app.invoke(inputs)
         
-        # Extract & Save AI Response
+        # Extract & save AI response
         raw_content = result["messages"][-1].content
         if isinstance(raw_content, list):
             final_answer = "".join([block['text'] for block in raw_content if 'text' in block])
