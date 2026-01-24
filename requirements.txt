@@ -10,3 +10,5 @@ pypdf
 tiktoken
 sentence-transformers
 langsmith
+langchain-chroma             
+chromadb

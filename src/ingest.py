@@ -6,6 +6,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter, Language
 from pinecone import Pinecone, ServerlessSpec
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
+from langchain_chroma import Chroma
 
 # Load secrets from .env file
 load_dotenv()
@@ -33,7 +34,8 @@ class IngestionPipeline:
     A pipeline to ingest documents into Pinecone vector store.
     '''
 
-    def __init__(self, pinecone_api_key:str, index_name:str, embedding_dimension:int):
+    def __init__(self,mode:str, pinecone_api_key:str, index_name:str, embedding_dimension:int):
+        self.MODE = mode
         self.PINECONE_API_KEY = pinecone_api_key
         self.INDEX_NAME = index_name
         self.EMBEDDING_DIMENSION = embedding_dimension
@@ -80,19 +82,23 @@ class IngestionPipeline:
         # Split
         chunks = []
         if pdf_docs:
-            print("Splitting PDFs...")
+            print("Splitting PDFs")
             chunks.extend(self._split_documents(pdf_docs))
         
         if code_docs:
-            print("Splitting Code...")
+            print("Splitting Code")
             chunks.extend(self._split_code(code_docs))
             
         print(f"Total chunks created: {len(chunks)}")
 
         # Store
         if chunks:
-            print(f"Embedding and Storing in Pinecone Index: {self.INDEX_NAME}...")
-            self._store_in_pinecone(chunks)
+            if self.MODE == "ONLINE":
+                print(f"Embedding and Storing in Pinecone Index: {self.INDEX_NAME}...")
+                self._store_in_pinecone(chunks)
+            else:
+                print("Embedding and Storing in Local ChromaDB...")
+                self._store_local(chunks)
             print("Ingestion complete successfully.")
         else:
             print("No documents found to ingest.")
@@ -171,6 +177,15 @@ class IngestionPipeline:
             embedding=embeddings,
             index_name=self.INDEX_NAME,
         )
+    
+    def _store_local(self, documents):
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        Chroma.from_documents(
+            documents=documents,
+            embedding=embeddings,
+            collection_name="local_docs",
+            persist_directory="./local_chromadb_storage"
+        )
 
 
 if __name__ == "__main__":
@@ -179,7 +194,10 @@ if __name__ == "__main__":
     INDEX_NAME = "documind-code-docs-index"
     EMBEDDING_DIMENSION = 384 # We use 384 dimensions because that is the output size of HuggingFace's embedding model.
     ROOT_DIR = "./"
-    pipeline = IngestionPipeline(pinecone_api_key=PINECONE_API_KEY, 
+    MODE = "LOCAL"
+
+    pipeline = IngestionPipeline(mode=MODE, pinecone_api_key=PINECONE_API_KEY, 
                                  index_name=INDEX_NAME, 
                                  embedding_dimension=EMBEDDING_DIMENSION)
+    
     pipeline.run(directory_path=ROOT_DIR)

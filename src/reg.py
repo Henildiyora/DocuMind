@@ -8,6 +8,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_chroma import Chroma
+from langchain_ollama import ChatOllama
 
 load_dotenv()
 
@@ -123,17 +125,24 @@ def write_to_file(file_path: str, content: str):
 
 
 class RAGEngine:
-    def __init__(self, index_name:str = None, google_api_key:str = None, pinecone_api_key:str = None):
-        if not google_api_key or not pinecone_api_key: raise ValueError("Missing API Keys")
+    def __init__(self,mode:str = "LOCAL", index_name:str = None, google_api_key:str = None, pinecone_api_key:str = None):
         
         # Setup memory
+        self.mode = mode.upper()
         self.chat_history = []
 
         # Setup vector store
         print("Initializing Knowledge Base")
         self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        self.vector_store = PineconeVectorStore(index_name=index_name, embedding=self.embeddings, pinecone_api_key=pinecone_api_key)
-        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
+
+        # Setup based on Mode
+        if self.mode == "ONLINE":
+            self._setup_online(index_name, google_api_key, pinecone_api_key)
+        else:
+            self._setup_local()
+
+        
+        
 
         @tool
         def semantic_knowledge_search(query: str):
@@ -142,13 +151,15 @@ class RAGEngine:
             """
             return "\n\n".join([d.page_content for d in self.retriever.invoke(query)])
 
-        self.tools = [semantic_knowledge_search, exact_code_search, list_project_files, read_specific_file, get_file_structure, git_history_check, check_installed_packages, write_to_file]
-
-        # Setup LLM & Agent
-        print("Initializing Language Model")
-        self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", 
-                                          temperature=0, 
-                                          google_api_key=google_api_key)
+        self.tools = [
+            semantic_knowledge_search, 
+            exact_code_search, 
+            list_project_files, 
+            read_specific_file, 
+            get_file_structure, 
+            git_history_check, 
+            check_installed_packages, 
+            write_to_file]
 
         # Smart system prompt
         system_prompt = """You are DocuMind, an expert Senior Software Engineer.
@@ -172,6 +183,48 @@ class RAGEngine:
             model=self.llm, 
             tools=self.tools, 
             system_prompt=system_prompt)
+        
+    def _setup_online(self, index_name, google_api_key, pinecone_api_key):
+        if not google_api_key or not pinecone_api_key: 
+            raise ValueError("Missing API Keys for Online Mode")
+        
+        self.vector_store = PineconeVectorStore(
+            index_name=index_name, 
+            embedding=self.embeddings, 
+            pinecone_api_key=pinecone_api_key)
+        
+        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
+
+        # Setup LLM & Agent
+        print("Initializing Language Model")
+        self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", 
+                                          temperature=0, 
+                                          google_api_key=google_api_key)
+        
+    def _setup_local(self):
+
+        # Vector Store: ChromaDB
+        print("Initializing ChromaDB (Local)")
+        self.vector_store = Chroma(
+            collection_name="local_docs",
+            embedding_function=self.embeddings,
+            persist_directory="./local_chromadb_storage"
+        )
+        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
+
+        # LLM: Ollama
+        print("Initializing Ollama (Local)")
+        try:
+            self.llm = ChatOllama(
+                model="llama3.2",
+                temperature=0,
+                base_url="http://localhost:11434"
+            )
+        except Exception as e:
+            print(f"Error connecting to Ollama: {e}")
+            raise
+        
+
 
     def ask(self, query:str = None):
         print(f"Agent thinking about: {query}")
