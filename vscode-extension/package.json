@@ -1,0 +1,70 @@
+{
+  "name": "documind",
+  "displayName": "DocuMind",
+  "description": "AI-powered code analysis and documentation agent for VS Code",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:documind.startChat",
+    "onCommand:documind.ingestCodebase"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "documind.startChat",
+        "title": "DocuMind: Start Chat"
+      },
+      {
+        "command": "documind.ingestCodebase",
+        "title": "DocuMind: Ingest Codebase"
+      }
+    ],
+    "configuration": {
+      "title": "DocuMind",
+      "properties": {
+        "documind.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Path to Python executable"
+        },
+        "documind.mode": {
+          "type": "string",
+          "enum": ["LOCAL", "ONLINE"],
+          "default": "LOCAL",
+          "description": "DocuMind mode: LOCAL (offline) or ONLINE (cloud)"
+        },
+        "documind.pineconeApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Pinecone API key for ONLINE mode"
+        },
+        "documind.googleApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Google API key for ONLINE mode"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0",
+    "@types/node": "16.x",
+    "eslint": "^8.28.0",
+    "typescript": "^4.9.4",
+    "@typescript-eslint/eslint-plugin": "^5.57.1",
+    "@typescript-eslint/parser": "^5.57.1"
+  }
+}
