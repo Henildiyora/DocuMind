@@ -104,9 +104,10 @@ def main() -> NoReturn:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py                          # Ingest current dir and chat
+  python main.py                          # Ingest current dir and chat (legacy mode)
   python main.py --target /path/to/code   # Ingest specific path
   python main.py --no-ingest              # Skip ingestion, just chat
+  python main.py --tui                    # Use rich TUI interface
         """
     )
     parser.add_argument(
@@ -119,6 +120,11 @@ Examples:
         "--no-ingest",
         action="store_true",
         help="Skip ingestion and just start chat mode"
+    )
+    parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="Use the rich Textual UI instead of legacy terminal interface"
     )
     args = parser.parse_args()
 
@@ -133,7 +139,13 @@ Examples:
             google_api_key=GOOGLE_API_KEY,
             pinecone_api_key=PINECONE_API_KEY
         )
-        start_chat(bot)
+
+        if args.tui:
+            # Import TUI module only when needed
+            from src.tui import run_tui
+            run_tui(bot)
+        else:
+            start_chat(bot)
     except Exception as e:
         logger.critical(f"Critical system error: {e}")
         sys.exit(1)

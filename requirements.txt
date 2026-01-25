@@ -12,3 +12,5 @@ sentence-transformers
 langsmith
 langchain-chroma             
 chromadb
+rich
+textual

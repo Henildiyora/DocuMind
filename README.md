@@ -7,6 +7,7 @@ DocuMind is an autonomous AI agent capable of navigating, debugging, and explain
 
 ## Key Features
 
+- **Rich Terminal UI**: Modern, interactive TUI built with Textual and Rich libraries
 - **Dual Mode Operation**: Local mode (ChromaDB + Ollama) or Online mode (Pinecone + Gemini)
 - **8 Specialized Tools**: Code analysis, file operations, git integration, package management
 - **Natural Language Chat**: Context-aware conversations with full conversation history
@@ -44,11 +45,17 @@ ollama serve
 
 #### Run DocuMind
 ```bash
-# Ingest your codebase and start chatting
+# See what the TUI looks like (static demo)
+python3 demo_tui.py
+
+# Ingest your codebase and start chatting (legacy terminal interface)
 python3 main.py --target /path/to/your/codebase
 
+# Use the rich TUI interface (recommended)
+python3 main.py --target /path/to/your/codebase --tui
+
 # Or skip ingestion for faster startup
-python3 main.py --target /path/to/your/codebase --no-ingest
+python3 main.py --no-ingest --tui
 ```
 
 ### Option 2: Online Mode
