@@ -30,16 +30,50 @@ SUPPORTED_EXTENSIONS: frozenset[str] = frozenset({
 })
 
 IGNORE_DIRS: frozenset[str] = frozenset({
+    # VCS
     ".git", ".hg", ".svn",
+    # Package / dependency dirs
     "node_modules", "bower_components",
     "venv", ".venv", "env", "DocuMind_venv",
-    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-    ".idea", ".vscode",
-    "build", "dist", "target", "out", ".next", ".nuxt",
-    ".documind", ".cache", ".tox", ".eggs",
     "site-packages", "dist-packages",
-    "hf_cache",
+    "vendor",  # Go / PHP
+    "Pods",    # iOS / CocoaPods
+    # Caches
+    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".cache", ".tox", ".eggs",
+    "hf_cache", ".parcel-cache", ".turbo", ".svelte-kit",
+    # Editors / IDEs
+    ".idea", ".vscode",
+    # Build / generated output
+    "build", "dist", "target", "out", "out-tsc",
+    ".next", ".nuxt", ".vercel", ".gradle",
+    "DerivedData", ".terraform",
+    # Docs / coverage artifacts (the stuff that polluted search before)
+    "htmlcov", "coverage", ".nyc_output",
+    "site", "_site", "_build", "public",
+    # DocuMind itself
+    ".documind",
 })
+
+IGNORE_FILES: frozenset[str] = frozenset({
+    # Coverage / test artifacts
+    "coverage.xml", "coverage.json", ".coverage", "lcov.info",
+    # Lockfiles (huge, not useful for semantic search)
+    "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+    "poetry.lock", "Pipfile.lock",
+    "Cargo.lock", "go.sum",
+    # OS / editor scratch
+    ".DS_Store", "Thumbs.db",
+})
+
+IGNORE_FILE_GLOBS: tuple[str, ...] = (
+    "*.min.js",
+    "*.min.css",
+    "*.map",
+    "*.bundle.js",
+    "*.bundle.css",
+    "*.lock",
+)
 
 
 def _config_path() -> Path:

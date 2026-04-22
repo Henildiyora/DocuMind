@@ -1,10 +1,12 @@
 # DocuMind
 
-**Fast, typo-tolerant, pure-local semantic + keyword search for any codebase or doc folder.**
+**100% free, 100% local, typo-tolerant hybrid search for any codebase or doc folder.**
 
-Replaces `Cmd+F` and `grep` with a hybrid retrieval engine (BM25 + dense vectors, merged by Reciprocal Rank Fusion) that works fully offline, handles misspellings, and can synthesize grounded answers with a local Gemma 3 or Qwen2.5-Coder model via Ollama.
+No API keys. No cloud. No vendor lock-in. Search and index never need any LLM at all — natural-language Q&A is an optional add-on that runs locally via Ollama.
 
-No VS Code extension. No cloud keys. One global CLI: `documind`.
+Replaces `Cmd+F` and `grep` with a hybrid retrieval engine (BM25 + dense vectors, merged by Reciprocal Rank Fusion) that handles misspellings and can synthesize grounded answers with a small local model.
+
+One global CLI: `documind`.
 
 ---
 
@@ -14,7 +16,7 @@ No VS Code extension. No cloud keys. One global CLI: `documind`.
 curl -fsSL https://raw.githubusercontent.com/Henildiyora/DocuMind/main/install.sh | bash
 ```
 
-This installs `documind` as a **global command** via `pipx`. You never have to come back to this repo — `documind` works from any directory on your machine.
+That's it. `documind` is now on your PATH and works from any directory.
 
 <details>
 <summary>Prefer manual install?</summary>
@@ -24,7 +26,7 @@ This installs `documind` as a **global command** via `pipx`. You never have to c
 pipx install "git+https://github.com/Henildiyora/DocuMind.git"
 ```
 
-Or clone it and install editable:
+Or clone and install editable:
 
 ```bash
 git clone https://github.com/Henildiyora/DocuMind.git
@@ -36,33 +38,42 @@ pipx install .
 
 ---
 
-## Quick start (3 commands)
+## Quick start — zero config, zero model
+
+Search is ready the moment DocuMind is installed. No Ollama required.
 
 ```bash
-# 1. One-time setup. Detects your project size and recommends the right model.
-documind setup
-
-# 2. In any project you want to search:
-cd ~/code/some-other-project
-documind search "ingestion pipeline"
-
-# 3. Or ask full questions (streamed answers grounded in your code):
-documind ask "where are user sessions expired?"
+cd ~/code/any-project
+documind index                       # incremental, only re-reads changed files
+documind search "auth middleware"    # fast, typo-tolerant ranked snippets
 ```
 
-If there's no index yet, `documind search` / `documind ask` will **offer to index for you on the spot** — no separate step required.
-
-For an interactive experience:
-
-```bash
-documind chat
-```
+That's the whole happy path. Everything below is optional.
 
 ---
 
-## Use it from any folder
+## Optional: natural-language Q&A
 
-DocuMind is a global CLI after install. You don't edit or re-enter the DocuMind repo to use it:
+If you want `documind ask` / `documind chat`, you need a small local model. Setup is a single command that:
+
+- Scans your project and recommends the smallest model that still works.
+- Auto-starts Ollama (via `brew services` on macOS or a detached `ollama serve` otherwise) — **no second terminal needed**.
+- Saves your preference and pulls the model.
+
+```bash
+documind setup           # recommends a tier, prompts to pull
+documind ask "where is session expiration handled?"
+documind chat            # interactive REPL
+```
+
+You'll need Ollama installed first:
+
+- macOS: `brew install ollama`
+- Linux: `curl -fsSL https://ollama.com/install.sh | sh`
+
+---
+
+## Use it from anywhere
 
 ```bash
 cd ~/work/api-service     && documind index && documind search "rate limiter"
@@ -70,43 +81,48 @@ cd ~/work/ml-experiments  && documind index && documind ask  "how do we compute 
 cd ~/notes/research-pdfs  && documind index && documind search "attention heads"
 ```
 
-Each project gets its own `.documind/` folder (git-ignored) that stores its vector + keyword index.
+Each project gets its own `.documind/` folder (git-ignored) with its vector + keyword index.
 
 ---
 
-## Smart model recommender
+## Model tiers
 
-`documind setup` scans your project and recommends a local model that fits its size. You can always override with `--tier` or `--model`.
+DocuMind keeps this list deliberately small. All three are free, all three run locally.
 
-| Tier   | Model                 | Size    | Best for                                |
-|--------|-----------------------|---------|-----------------------------------------|
-| tiny   | `qwen2.5-coder:1.5b`  | ~1.0 GB | Tiny projects, fastest answers          |
-| small  | `gemma3:4b`           | ~3.3 GB | Balanced default for most repos         |
-| medium | `qwen2.5-coder:7b`    | ~4.7 GB | Larger codebases, better reasoning      |
-| large  | `qwen2.5-coder:14b`   | ~9.0 GB | Very large repos, deep explanations     |
+| Tier   | Model                 | Size     | Best for                                       |
+|--------|-----------------------|----------|------------------------------------------------|
+| tiny   | `qwen2.5-coder:1.5b`  | ~1.0 GB  | Default. Fast, free, fits on any laptop        |
+| small  | `gemma3:4b`           | ~3.3 GB  | Richer answers for mid-sized repos             |
+| deep   | `qwen2.5-coder:7b`    | ~4.7 GB  | Deeper code reasoning on larger repos          |
 
-Examples:
+Want something bigger? Pass any Ollama tag:
 
 ```bash
-documind setup                      # scan + recommend interactively
-documind setup --yes                # accept recommendation, auto-pull
-documind setup --tier medium        # force a tier
-documind setup --model gemma3:12b   # use any Ollama tag you want
+documind setup --model qwen2.5-coder:14b
+documind setup --model llama3.1:8b
+```
+
+Other setup options:
+
+```bash
+documind setup --yes              # accept recommendation, pull interactively
+documind setup --no-pull          # save preference only, skip the download
+documind setup --tier small       # force a tier
 ```
 
 ---
 
 ## Commands
 
-| Command                        | What it does                                                                 |
-|-------------------------------|------------------------------------------------------------------------------|
-| `documind setup`              | Scan project, recommend a model tier, pull via Ollama, save choice.          |
-| `documind index [PATH]`       | Build or incrementally update the project index.                             |
-| `documind search "query"`     | Fast ranked snippets. Typo-tolerant. No LLM needed.                          |
-| `documind ask "question"`     | Retrieval + local LLM synthesis. Streams Markdown to your terminal.          |
-| `documind chat`               | Interactive REPL. `/help`, `/clear`, `/k`, `/model`, `/exit`.                |
-| `documind doctor`             | Check Ollama, the configured model, and index health.                        |
-| `documind reset`              | Delete the project's `.documind/` directory.                                 |
+| Command                        | What it does                                                                  |
+|-------------------------------|-------------------------------------------------------------------------------|
+| `documind index [PATH]`       | Build or incrementally update the project index. No model needed.             |
+| `documind search "query"`     | Fast ranked snippets. Typo-tolerant. No model needed.                         |
+| `documind ask "question"`     | Retrieval + local LLM synthesis. Streams Markdown to your terminal.           |
+| `documind chat`               | Interactive REPL. `/help`, `/clear`, `/k`, `/model`, `/exit`.                 |
+| `documind setup`              | Optional. Pick + pull a local model for `ask` / `chat`.                       |
+| `documind doctor`             | Check Ollama, the configured model, and index health.                         |
+| `documind reset`              | Delete the project's `.documind/` directory.                                  |
 
 Handy flags:
 
@@ -133,10 +149,11 @@ flowchart LR
     llm --> out2[Streamed Answer with Citations]
 ```
 
-- **Hybrid retrieval.** BM25 catches exact identifiers; embeddings catch meaning. RRF merges both so either signal can save a hit.
-- **Typo tolerance.** Every query term is expanded against the BM25 vocabulary via `rapidfuzz`. `documind search "ingesion"` still finds `ingestion`.
-- **Incremental indexing.** Files are hashed; only changed files get re-embedded on the next `documind index`.
-- **Light deps.** Embeddings use `fastembed` (ONNX runtime, no PyTorch). Vector storage uses `lancedb`. Keyword search uses `bm25s`. All pip-installable, no Docker.
+- **Hybrid retrieval.** BM25 catches exact identifiers; embeddings catch meaning. RRF merges both.
+- **Typo tolerance.** Query terms are expanded against the BM25 vocabulary via `rapidfuzz`.
+- **Incremental indexing.** Files are hashed; only changed files get re-embedded.
+- **Light deps.** `fastembed` (ONNX, no PyTorch), `lancedb`, `bm25s`. No Docker, no GPU.
+- **Ignores generated artifacts.** `htmlcov/`, `coverage.xml`, lockfiles, `*.min.js`, `*.map`, and the usual `node_modules`/`venv`/`target`/`dist` are excluded automatically.
 
 ### Storage layout
 
@@ -156,8 +173,6 @@ flowchart LR
 Code: Python, JS/TS, Go, Rust, Java, Kotlin, C/C++, C#, Ruby, PHP, Swift, Scala, and more.
 Docs: Markdown, RST, plain text, JSON, YAML, TOML, XML, SQL, shell, `Dockerfile`, `Makefile`, `.pdf`.
 
-Ignored by default: `.git`, `node_modules`, `venv`, `dist`, `build`, `.documind`, and friends.
-
 ---
 
 ## Configuration
@@ -171,7 +186,7 @@ documind doctor --write-config   # creates ~/.config/documind/config.toml
 Example config:
 
 ```toml
-model = "gemma3:4b"
+model = "qwen2.5-coder:1.5b"
 ollama_base_url = "http://localhost:11434"
 embedding_model = "BAAI/bge-small-en-v1.5"
 top_k = 8
@@ -197,7 +212,7 @@ Per-project indexes live in each project's `.documind/` directory — delete the
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup (clone, `pip install -e ".[dev]"`, `pytest`, `ruff`).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup.
 
 ## License
 

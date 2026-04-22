@@ -1,17 +1,21 @@
 """One-command DocuMind setup.
 
+Design principle: never block the user. Scanning and saving a model
+preference always succeeds; pulling the model via Ollama is a best-effort
+add-on. Search and index work regardless.
+
 Responsibilities:
 - Scan a target project to count files and lines of code.
 - Recommend a model tier based on project size.
-- Verify that Ollama is installed/reachable; if not, print clear guidance.
-- Offer to pull the chosen model (or pull it directly in --yes mode).
-- Persist the chosen model to the user's `~/.config/documind/config.toml`.
+- Save the chosen model to `~/.config/documind/config.toml`.
+- If requested, auto-start Ollama (without forcing a second terminal) and
+  pull the chosen model.
 """
 
 from __future__ import annotations
 
-import platform
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +34,7 @@ from .models import (
     recommend_tier,
     tier_info,
 )
+from .ollama_daemon import ensure_daemon_running, install_hint
 
 
 @dataclass
@@ -59,17 +64,8 @@ def scan_project(root: Path, cfg: Config | None = None) -> ProjectStats:
     return ProjectStats(file_count=files, total_loc=total_loc)
 
 
-def _install_hint_for_ollama() -> str:
-    system = platform.system()
-    if system == "Darwin":
-        return "brew install ollama   # or download from https://ollama.com/download"
-    if system == "Linux":
-        return "curl -fsSL https://ollama.com/install.sh | sh"
-    return "See https://ollama.com/download"
-
-
 def _render_tier_table(console: Console, recommended: str) -> None:
-    table = Table(title="Available model tiers", header_style="bold")
+    table = Table(title="Available model tiers  (all free, all local)", header_style="bold")
     table.add_column("Tier")
     table.add_column("Model")
     table.add_column("Size")
@@ -84,6 +80,10 @@ def _render_tier_table(console: Console, recommended: str) -> None:
             m.best_for,
         )
     console.print(table)
+    console.print(
+        "[dim]Tip: any Ollama tag works via `--model <tag>` "
+        "(e.g. --model qwen2.5-coder:14b).[/dim]"
+    )
 
 
 def _select_spec(
@@ -95,7 +95,6 @@ def _select_spec(
 ) -> ModelSpec:
     """Pick a ModelSpec from explicit overrides, interactive input, or recommendation."""
     if model:
-        # Custom model: synthesize a spec entry carrying the user-chosen tag.
         return ModelSpec(
             tier="custom",
             name=model,
@@ -110,7 +109,7 @@ def _select_spec(
         return tier_info(tier)
 
     _render_tier_table(console, recommended)
-    if yes:
+    if yes or not sys.stdin.isatty():
         console.print(f"[green]Using recommended tier:[/green] {recommended}")
         return tier_info(recommended)
 
@@ -122,16 +121,44 @@ def _select_spec(
     return tier_info(choice)
 
 
+def _should_pull(pull: bool | None, yes: bool, console: Console, spec: ModelSpec) -> bool:
+    """Resolve the --pull/--no-pull tri-state into a boolean."""
+    if pull is True:
+        return True
+    if pull is False:
+        return False
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        # Non-interactive default: don't burn bandwidth unless asked.
+        return False
+    return Confirm.ask(
+        f"Pull [bold]{spec.name}[/bold] now? (~{spec.size_gb:.1f} GB, free, local)",
+        default=True,
+    )
+
+
 def run_setup(
     root: Path,
     tier: str | None = None,
     model: str | None = None,
     yes: bool = False,
-    skip_pull: bool = False,
+    pull: bool | None = None,
 ) -> int:
-    """Interactive or scripted setup flow. Returns an exit code (0 on success)."""
+    """Interactive or scripted setup flow. Returns an exit code.
+
+    Exit codes:
+        0 - preference saved (optionally, model pulled)
+        1 - invalid tier/model argument
+        2 - pull was explicitly requested but failed
+    """
     console = Console()
-    console.print(Panel.fit("DocuMind setup", style="bold blue"))
+    console.print(
+        Panel.fit(
+            "DocuMind setup\n[dim]100% free, 100% local. No API keys.[/dim]",
+            style="bold blue",
+        )
+    )
 
     # 1) Scan project
     console.print(f"Scanning [cyan]{root}[/cyan]...")
@@ -139,80 +166,87 @@ def run_setup(
     console.print(f"Found [bold]{stats.summary}[/bold]")
 
     # 2) Pick model
-    spec = _select_spec(stats, tier, model, yes, console)
+    try:
+        spec = _select_spec(stats, tier, model, yes, console)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 1
     console.print(
         f"Selected model: [bold cyan]{spec.name}[/bold cyan] ({spec.family})"
     )
 
-    # 3) Persist choice to user config
+    # 3) Persist choice (always succeeds, independent of Ollama)
     cfg_path = update_user_config({"model": spec.name})
     console.print(f"Saved to [dim]{cfg_path}[/dim]")
 
-    # 4) Verify Ollama
-    cfg = load_config()
-    llm = OllamaClient(cfg)
+    console.print(
+        "[green]Ready.[/green] Search and index already work. "
+        "The rest is only needed for [bold]documind ask[/bold] / [bold]documind chat[/bold]."
+    )
 
+    # 4) Decide whether to pull
+    want_pull = _should_pull(pull, yes, console, spec)
+    if not want_pull:
+        console.print(
+            Panel(
+                "Skipping model download.\n\n"
+                "You can always pull later with:\n"
+                f"  [bold]ollama pull {spec.name}[/bold]\n"
+                "or re-run [bold]documind setup --pull[/bold].",
+                title="All set",
+                border_style="green",
+            )
+        )
+        return 0
+
+    # 5) Make Ollama available (install check + auto-start)
     if shutil.which("ollama") is None:
         console.print(
             Panel(
                 "Ollama is not installed. Install it with:\n\n"
-                f"  [bold]{_install_hint_for_ollama()}[/bold]\n\n"
-                "Then run [bold]documind setup[/bold] again.",
+                f"  [bold]{install_hint()}[/bold]\n\n"
+                "Then re-run [bold]documind setup --pull[/bold]. "
+                "(Search and index don't need Ollama at all.)",
                 title="Ollama missing",
                 border_style="yellow",
             )
         )
-        return 2
+        return 0 if pull is None else 2
 
-    if not llm.ping():
+    cfg = load_config()
+    status = ensure_daemon_running(cfg)
+    if not status.running:
         console.print(
             Panel(
-                f"Ollama binary found but daemon is not reachable at "
-                f"{cfg.ollama_base_url}.\n\n"
-                "Start it in another terminal:\n\n"
+                "Ollama binary found but the daemon couldn't be started automatically.\n\n"
+                "Try in another terminal:\n\n"
                 "  [bold]ollama serve[/bold]\n\n"
-                "Then re-run [bold]documind setup[/bold].",
+                "Then re-run [bold]documind setup --pull[/bold].",
                 title="Ollama not running",
                 border_style="yellow",
             )
         )
-        return 3
+        return 0 if pull is None else 2
+    if status.how != "already":
+        console.print(f"[green]Started Ollama[/green] via {status.how}.")
 
-    console.print(f"[green]Ollama is running[/green] at {cfg.ollama_base_url}")
-
-    # 5) Pull model if missing
+    # 6) Pull the model
+    llm = OllamaClient(cfg)
     if llm.model_available(spec.name):
         console.print(f"[green]Model already pulled:[/green] {spec.name}")
     else:
-        if skip_pull:
-            console.print(
-                f"[yellow]Model {spec.name} not pulled.[/yellow] "
-                f"Run: [bold]ollama pull {spec.name}[/bold]"
-            )
-            return 4
-
-        should_pull = yes or Confirm.ask(
-            f"Pull [bold]{spec.name}[/bold] now? (~{spec.size_gb:.1f} GB)",
-            default=True,
-        )
-        if not should_pull:
-            console.print(
-                f"[yellow]Skipped.[/yellow] Later: [bold]ollama pull {spec.name}[/bold]"
-            )
-            return 5
-
         try:
-            console.print(f"Pulling [cyan]{spec.name}[/cyan]... this can take a few minutes.")
+            console.print(f"Pulling [cyan]{spec.name}[/cyan]... (this can take a few minutes)")
             llm.pull(spec.name)
             console.print(f"[green]Pulled[/green] {spec.name}")
         except LLMError as exc:
             console.print(f"[red]Failed to pull {spec.name}:[/red] {exc}")
-            return 6
+            return 2
 
-    # 6) Final status
+    # 7) Done
     console.print(
         Panel(
-            f"DocuMind is ready.\n\n"
+            "DocuMind is fully set up.\n\n"
             f"Model: [bold]{spec.name}[/bold]\n"
             f"Config: [dim]{user_config_path()}[/dim]\n\n"
             "Next steps:\n"

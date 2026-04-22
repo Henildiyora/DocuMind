@@ -287,7 +287,10 @@ class DocuMindIndex:
         )
 
         retriever = bm25s.BM25()
-        retriever.index(tokens)
+        try:
+            retriever.index(tokens, show_progress=False)
+        except TypeError:
+            retriever.index(tokens)
 
         if self.bm25_path.exists():
             shutil.rmtree(self.bm25_path, ignore_errors=True)

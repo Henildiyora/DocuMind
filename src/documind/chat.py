@@ -13,6 +13,7 @@ from rich.prompt import Prompt
 from .config import Config
 from .index import DocuMindIndex
 from .llm import LLMError, OllamaClient
+from .ollama_daemon import ensure_daemon_running, install_hint
 from .prompts import build_messages
 from .search import hits_to_context, search
 
@@ -36,17 +37,31 @@ def run_chat(project_root: Path, cfg: Config) -> None:
         )
         return
 
-    llm = OllamaClient(cfg)
-    if not llm.ping():
+    import shutil
+
+    if shutil.which("ollama") is None:
         console.print(
-            f"[red]Cannot reach Ollama at {cfg.ollama_base_url}.[/red] "
-            "Start it with [bold]ollama serve[/bold]."
+            f"[yellow]Ollama isn't installed.[/yellow] Install with:\n"
+            f"  [bold]{install_hint()}[/bold]\n"
+            "Tip: [bold]documind search[/bold] works without any model."
         )
         return
+
+    status = ensure_daemon_running(cfg)
+    if not status.running:
+        console.print(
+            "[red]Couldn't start Ollama automatically.[/red] "
+            "Try [bold]ollama serve[/bold] in another terminal."
+        )
+        return
+    if status.how != "already":
+        console.print(f"[dim]Started Ollama via {status.how}.[/dim]")
+
+    llm = OllamaClient(cfg)
     if not llm.model_available():
         console.print(
             f"[yellow]Model {cfg.model} is not pulled.[/yellow] "
-            f"Run [bold]ollama pull {cfg.model}[/bold] first."
+            f"Run [bold]documind setup --pull[/bold] first."
         )
         return
 

@@ -103,7 +103,7 @@ print_next_steps() {
         *)      ollama_hint="See https://ollama.com/download" ;;
     esac
 
-    printf "\n\033[1;32mDocuMind installed.\033[0m\n"
+    printf "\n\033[1;32mDocuMind installed.\033[0m  100%% free, 100%% local. No API keys.\n"
 
     cat <<EOF
 
@@ -111,30 +111,28 @@ The 'documind' command has been installed to:
     ${bin_dir}
 
 IMPORTANT: open a NEW terminal window (or run 'source ~/.zshrc' /
-'source ~/.bashrc') so that 'documind' is on your PATH. If you're on
-zsh and already in this shell, you can also run:
+'source ~/.bashrc') so that 'documind' is on your PATH. You can also
+apply it to this shell right now:
 
     export PATH="${bin_dir}:\$PATH"
 
-Then verify and set up:
+Use it right away in ANY project (no model, no config required):
 
-    documind --version
+    cd ~/path/to/any/project
+    documind index
+    documind search "your query"
+
+Optional (only if you want natural-language Q&A via 'documind ask' or
+'documind chat'):
+
+    # 1) Install Ollama if you don't have it:
+    ${ollama_hint}
+
+    # 2) Pick + pull a small local model (~1 GB by default):
     documind setup
 
-Full next steps:
-
-  1. Make sure Ollama is installed and running:
-         ${ollama_hint}
-         ollama serve &
-
-  2. Pick and pull the right model for your project (interactive):
-         documind setup
-
-  3. Use it from any project:
-         cd ~/path/to/any/project
-         documind index
-         documind search "your query"
-         documind ask "how does X work?"
+DocuMind will auto-start the Ollama daemon for you, so you never need
+a second terminal. Search and index work even if Ollama is not installed.
 
 Uninstall later with:
     pipx uninstall documind

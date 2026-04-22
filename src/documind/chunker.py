@@ -8,13 +8,20 @@ indexing.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import os
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import IGNORE_DIRS, SUPPORTED_EXTENSIONS, Config
+from .config import (
+    IGNORE_DIRS,
+    IGNORE_FILE_GLOBS,
+    IGNORE_FILES,
+    SUPPORTED_EXTENSIONS,
+    Config,
+)
 
 LANG_BY_EXT: dict[str, str] = {
     ".py": "python", ".pyi": "python",
@@ -81,6 +88,13 @@ def _should_include(path: Path) -> bool:
     return lname in {"dockerfile", "makefile", "gnumakefile"}
 
 
+def _is_ignored_filename(name: str) -> bool:
+    """Return True if `name` matches the IGNORE_FILES set or any glob pattern."""
+    if name in IGNORE_FILES:
+        return True
+    return any(fnmatch.fnmatch(name, pattern) for pattern in IGNORE_FILE_GLOBS)
+
+
 def iter_source_files(root: Path, max_bytes: int) -> Iterator[Path]:
     """Yield candidate source files under `root`, honoring ignore rules."""
     root = root.resolve()
@@ -88,6 +102,8 @@ def iter_source_files(root: Path, max_bytes: int) -> Iterator[Path]:
         dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
         for fname in filenames:
             if fname.startswith("."):
+                continue
+            if _is_ignored_filename(fname):
                 continue
             p = Path(dirpath) / fname
             if not _should_include(p):

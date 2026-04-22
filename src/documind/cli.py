@@ -24,6 +24,7 @@ from . import __version__
 from .config import Config, load_config, write_default_config
 from .index import DocuMindIndex
 from .llm import LLMError, OllamaClient
+from .ollama_daemon import ensure_daemon_running, install_hint
 from .prompts import build_messages
 from .search import format_snippet, hits_to_context, search
 
@@ -110,6 +111,44 @@ def _ensure_index(
     console.print(f"[bold]Indexing[/bold] {idx.project_root}")
     _build_index_with_progress(idx)
     return True
+
+
+def _ensure_llm_ready(cfg: Config) -> OllamaClient | None:
+    """Make Ollama reachable and the configured model available.
+
+    Returns a ready `OllamaClient` or None on failure (after printing a
+    clear user-facing message). Never asks the user to open a second
+    terminal -- we try to start Ollama ourselves first.
+    """
+    import shutil
+
+    if shutil.which("ollama") is None:
+        console.print(
+            f"[yellow]Ollama isn't installed.[/yellow] Install it with:\n"
+            f"  [bold]{install_hint()}[/bold]\n"
+            "Then retry. (Tip: `documind search` works without any model.)"
+        )
+        return None
+
+    status = ensure_daemon_running(cfg)
+    if not status.running:
+        console.print(
+            "[red]Couldn't start Ollama automatically.[/red] "
+            "Try: [bold]ollama serve[/bold] in another terminal, then retry."
+        )
+        return None
+    if status.how != "already":
+        console.print(f"[dim]Started Ollama via {status.how}.[/dim]")
+
+    llm = OllamaClient(cfg)
+    if not llm.model_available():
+        console.print(
+            f"[yellow]Model {cfg.model!r} isn't pulled yet.[/yellow] "
+            f"Run: [bold]documind setup --pull[/bold] "
+            f"or [bold]ollama pull {cfg.model}[/bold]"
+        )
+        return None
+    return llm
 
 
 def _make_cfg(model: str | None, k: int | None) -> Config:
@@ -254,18 +293,8 @@ def cmd_ask(
             console.print()
         return
 
-    llm = OllamaClient(cfg)
-    if not llm.ping():
-        console.print(
-            f"[red]Ollama not reachable at {cfg.ollama_base_url}.[/red] "
-            "Start it with [bold]ollama serve[/bold] or use --no-llm."
-        )
-        raise typer.Exit(2)
-    if not llm.model_available():
-        console.print(
-            f"[yellow]Model {cfg.model!r} not pulled.[/yellow] "
-            f"Run: [bold]ollama pull {cfg.model}[/bold]"
-        )
+    llm = _ensure_llm_ready(cfg)
+    if llm is None:
         raise typer.Exit(2)
 
     context = hits_to_context(hits)
@@ -309,16 +338,24 @@ def cmd_chat(
 @app.command("setup")
 def cmd_setup(
     path: Path | None = typer.Option(None, "--path", "-p", help="Project to scan for the recommendation."),
-    tier: str | None = typer.Option(None, "--tier", help="Force a tier: tiny, small, medium, or large."),
-    model: str | None = typer.Option(None, "--model", "-m", help="Force a specific Ollama model tag."),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Accept recommendation and pull without prompting."),
-    skip_pull: bool = typer.Option(False, "--skip-pull", help="Do not run `ollama pull`."),
+    tier: str | None = typer.Option(None, "--tier", help="Force a tier: tiny, small, or deep."),
+    model: str | None = typer.Option(None, "--model", "-m", help="Force a specific Ollama model tag (e.g. qwen2.5-coder:14b)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Accept the recommendation without prompting."),
+    pull: bool | None = typer.Option(
+        None,
+        "--pull/--no-pull",
+        help="Pull the model via Ollama. Default: ask (or skip in non-interactive shells).",
+    ),
 ) -> None:
-    """Pick and install the right local model for this machine + project."""
+    """Pick a local model for `documind ask` / `documind chat`.
+
+    Search and index never need a model, so this command is optional.
+    It saves your model preference and can (optionally) pull it via Ollama.
+    """
     from .setup import run_setup
 
     root = _resolve_root(path)
-    code = run_setup(root, tier=tier, model=model, yes=yes, skip_pull=skip_pull)
+    code = run_setup(root, tier=tier, model=model, yes=yes, pull=pull)
     if code != 0:
         raise typer.Exit(code)
 
@@ -350,12 +387,30 @@ def cmd_doctor(
     else:
         table.add_row("config", "[green]ok[/green]", f"model={cfg.model}, emb={cfg.embedding_model}")
 
-    # Ollama
+    # Ollama (best-effort auto-start so the table reflects reality)
     llm = OllamaClient(cfg)
     if llm.ping():
         table.add_row("ollama daemon", "[green]ok[/green]", cfg.ollama_base_url)
     else:
-        table.add_row("ollama daemon", "[red]down[/red]", f"Run: ollama serve ({cfg.ollama_base_url})")
+        status = ensure_daemon_running(cfg)
+        if status.running:
+            table.add_row(
+                "ollama daemon",
+                "[green]ok[/green]",
+                f"{cfg.ollama_base_url} (started via {status.how})",
+            )
+        elif status.how == "missing":
+            table.add_row(
+                "ollama daemon",
+                "[red]missing[/red]",
+                f"Install: {install_hint()}",
+            )
+        else:
+            table.add_row(
+                "ollama daemon",
+                "[red]down[/red]",
+                f"Run: ollama serve ({cfg.ollama_base_url})",
+            )
 
     # Model
     if llm.model_available():
