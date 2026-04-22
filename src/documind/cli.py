@@ -113,6 +113,25 @@ def _ensure_index(
     return True
 
 
+def _llm_ready_nonblocking(cfg: Config) -> OllamaClient | None:
+    """Return a ready ``OllamaClient`` iff the daemon is up and the model is pulled.
+
+    Used only by ``documind search`` so the zero-config path stays
+    zero-overhead. This function never prompts, never auto-starts the
+    daemon, and never prints: it silently returns None if the LLM isn't
+    ready right now.
+    """
+    try:
+        llm = OllamaClient(cfg)
+        if not llm.ping():
+            return None
+        if not llm.model_available():
+            return None
+        return llm
+    except Exception:
+        return None
+
+
 def _ensure_llm_ready(cfg: Config) -> OllamaClient | None:
     """Make Ollama reachable and the configured model available.
 
@@ -212,19 +231,75 @@ def cmd_index(
 # --------------------------------------------------------------------- search
 
 
+def _print_hits(hits, cfg: Config, *, show_code: bool, compact: bool) -> None:
+    """Render ranked search hits.
+
+    Parameters
+    ----------
+    hits:
+        Retrieved ``SearchHit`` records to render.
+    cfg:
+        Active ``Config`` (passed to ``format_snippet`` for snippet trimming).
+    show_code:
+        If True, print the full code body under each header.
+    compact:
+        If True, use the tight "sources" layout (one indented line per hit).
+        If False, use the full-width header with RRF debug info.
+    """
+    for rank, hit in enumerate(hits, start=1):
+        bm25 = f"bm25#{hit.bm25_rank}" if hit.bm25_rank else "--"
+        vec = f"vec#{hit.vector_rank}" if hit.vector_rank else "--"
+        if compact:
+            header = (
+                f"  [bold cyan]{rank:>2}[/bold cyan]  "
+                f"[green]{hit.rel_path}[/green]"
+                f":[magenta]{hit.start_line}-{hit.end_line}[/magenta]  "
+                f"[dim]({bm25}, {vec})[/dim]"
+            )
+        else:
+            header = (
+                f"[bold cyan]{rank:>2}[/bold cyan] "
+                f"[green]{hit.rel_path}[/green]"
+                f":[magenta]{hit.start_line}-{hit.end_line}[/magenta] "
+                f"[dim]({bm25}, {vec}, rrf={hit.score:.4f})[/dim]"
+            )
+        console.print(header)
+        if show_code:
+            snippet = format_snippet(hit, cfg)
+            lang = hit.language if hit.language not in {"text", "pdf"} else "text"
+            try:
+                console.print(Syntax(snippet, lang, line_numbers=False, theme="ansi_dark", word_wrap=True))
+            except Exception:
+                console.print(snippet)
+            console.print()
+
+
 @app.command("search")
 def cmd_search(
-    query: str = typer.Argument(..., help="Search query."),
+    query: str = typer.Argument(..., help="Search query or natural-language question."),
     path: Path | None = typer.Option(None, "--path", "-p", help="Project root."),
     k: int | None = typer.Option(None, "--k", "-k", help="Number of results."),
-    show_code: bool = typer.Option(True, "--code/--no-code", help="Show code snippets."),
+    summary: bool | None = typer.Option(
+        None,
+        "--summary/--no-summary",
+        help="Synthesize a natural-language answer if a local model is available (default: auto).",
+    ),
+    show_code: bool = typer.Option(
+        False,
+        "--code/--no-code",
+        help="Print full code snippets (default: compact file refs when summarizing).",
+    ),
     auto_index: bool | None = typer.Option(
         None,
         "--auto-index/--no-auto-index",
         help="Build the index on the fly if missing (default: prompt when interactive).",
     ),
 ) -> None:
-    """Fast hybrid search. Typo-tolerant, no LLM required."""
+    """Fast hybrid search. Answers in natural language when a local model is available.
+
+    Zero-config path: with no model installed, this is a pure BM25 + vector
+    search over your project -- 100% free, 100% local, no API keys.
+    """
     root = _resolve_root(path)
     cfg = _make_cfg(None, k)
     idx = DocuMindIndex(root, cfg)
@@ -234,26 +309,39 @@ def cmd_search(
     hits = search(idx, query, cfg)
     if not hits:
         console.print("[yellow]No matches.[/yellow]")
+        idx.close()
         return
 
-    for rank, hit in enumerate(hits, start=1):
-        bm25 = f"bm25#{hit.bm25_rank}" if hit.bm25_rank else "--"
-        vec = f"vec#{hit.vector_rank}" if hit.vector_rank else "--"
-        header = (
-            f"[bold cyan]{rank:>2}[/bold cyan] "
-            f"[green]{hit.rel_path}[/green]"
-            f":[magenta]{hit.start_line}-{hit.end_line}[/magenta] "
-            f"[dim]({bm25}, {vec}, rrf={hit.score:.4f})[/dim]"
+    llm = None if summary is False else _llm_ready_nonblocking(cfg)
+
+    if llm is not None:
+        console.print(
+            f"[bold]Answer[/bold]  [dim](local model: {cfg.model}, 100% free)[/dim]"
         )
-        console.print(header)
-        if show_code:
-            snippet = format_snippet(hit, cfg)
-            lang = hit.language if hit.language not in {"text", "pdf"} else "text"
-            try:
-                console.print(Syntax(snippet, lang, line_numbers=False, theme="ansi_dark", word_wrap=True))
-            except Exception:
-                console.print(snippet)
+        messages = build_messages(query, hits_to_context(hits))
+        buffer = ""
+        try:
+            with Live(Markdown(""), console=console, refresh_per_second=20) as live:
+                for tok in llm.chat_stream(messages):
+                    buffer += tok
+                    live.update(Markdown(buffer))
+        except LLMError as exc:
+            console.print(f"[dim]summary failed: {exc}[/dim]")
         console.print()
+        console.print("[bold]Sources[/bold]")
+        _print_hits(hits, cfg, show_code=show_code, compact=True)
+    else:
+        if summary is True:
+            console.print(
+                "[yellow]No local model available for a summary.[/yellow] "
+                "Run [bold]documind setup[/bold] (free, local) or drop [bold]--summary[/bold]."
+            )
+        console.print(f"[bold]Snippets from[/bold] [cyan]{root}[/cyan]")
+        _print_hits(hits, cfg, show_code=True, compact=False)
+        if summary is None:
+            console.print(
+                "[dim]Tip: run `documind setup` for a free, local natural-language answer on top.[/dim]"
+            )
 
     idx.close()
 

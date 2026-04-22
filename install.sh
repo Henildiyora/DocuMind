@@ -77,13 +77,9 @@ ensure_pipx() {
 install_documind() {
     local spec="git+${REPO_URL}@${BRANCH}"
     log "Installing DocuMind from ${spec}"
-
-    if pipx list 2>/dev/null | grep -q "package documind"; then
-        pipx upgrade documind --spec "$spec" >/dev/null \
-            || pipx install --force "$spec"
-    else
-        pipx install "$spec"
-    fi
+    # `--force` handles both fresh install and upgrade paths in a single call
+    # and works across all pipx versions (older pipx had `--spec`, newer removed it).
+    pipx install --force "$spec"
 }
 
 ensure_on_path() {

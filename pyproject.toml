@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "documind"
-version = "2.1.0"
+version = "2.2.0"
 description = "Fast, typo-tolerant, pure-local semantic + keyword search for any codebase or docs, powered by hybrid retrieval and Ollama Gemma."
 readme = "README.md"
 requires-python = ">=3.10"
