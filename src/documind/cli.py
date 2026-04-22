@@ -1,0 +1,420 @@
+"""DocuMind Typer-based CLI."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import typer
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
+from rich.prompt import Confirm
+from rich.syntax import Syntax
+from rich.table import Table
+
+from . import __version__
+from .config import Config, load_config, write_default_config
+from .index import DocuMindIndex
+from .llm import LLMError, OllamaClient
+from .prompts import build_messages
+from .search import format_snippet, hits_to_context, search
+
+app = typer.Typer(
+    name="documind",
+    help="Fast, typo-tolerant semantic + keyword search for your codebase.",
+    add_completion=False,
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+)
+console = Console()
+
+
+# --------------------------------------------------------------------- shared
+
+
+def _resolve_root(path: Path | None) -> Path:
+    return (path or Path.cwd()).resolve()
+
+
+def _build_index_with_progress(idx: DocuMindIndex):
+    """Run a full incremental index build with a Rich progress UI.
+
+    Returns the resulting :class:`IndexStats`.
+    """
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        tasks: dict[str, int] = {}
+
+        def on_progress(phase: str, done: int, total: int) -> None:
+            label = {
+                "chunking": "Chunking",
+                "embedding": "Embedding",
+                "bm25": "BM25",
+            }.get(phase, phase)
+            if phase not in tasks:
+                tasks[phase] = progress.add_task(label, total=max(total, 1))
+            progress.update(tasks[phase], completed=done, total=max(total, 1))
+
+        return idx.build_or_update(progress=on_progress)
+
+
+def _ensure_index(
+    idx: DocuMindIndex,
+    *,
+    auto_index: bool | None,
+) -> bool:
+    """If the index is missing, optionally build it. Returns True if ready.
+
+    `auto_index=True`  -> always build without asking.
+    `auto_index=False` -> never build; just return False.
+    `auto_index=None`  -> prompt if attached to a TTY; otherwise build.
+    """
+    if idx.exists():
+        return True
+
+    if auto_index is False:
+        console.print(
+            "[red]No index found.[/red] Run [bold]documind index[/bold] first."
+        )
+        return False
+
+    should_build = auto_index is True
+    if auto_index is None:
+        if sys.stdin.isatty():
+            console.print(
+                f"[yellow]No index found[/yellow] at {idx.index_dir}."
+            )
+            should_build = Confirm.ask("Index this project now?", default=True)
+        else:
+            should_build = True
+
+    if not should_build:
+        console.print("Run [bold]documind index[/bold] when you're ready.")
+        return False
+
+    console.print(f"[bold]Indexing[/bold] {idx.project_root}")
+    _build_index_with_progress(idx)
+    return True
+
+
+def _make_cfg(model: str | None, k: int | None) -> Config:
+    overrides: dict = {}
+    if model:
+        overrides["model"] = model
+    if k:
+        overrides["top_k"] = k
+    return load_config(overrides or None)
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        console.print(f"documind {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False, "--version", "-V", callback=_version_callback, is_eager=True,
+        help="Show version and exit.",
+    ),
+) -> None:
+    """DocuMind: pure-local hybrid search for any project."""
+
+
+# --------------------------------------------------------------------- index
+
+
+@app.command("index")
+def cmd_index(
+    path: Path | None = typer.Argument(None, help="Project root (default: cwd)."),
+    rebuild: bool = typer.Option(False, "--rebuild", help="Delete and rebuild from scratch."),
+) -> None:
+    """Index a project (incremental by default)."""
+    root = _resolve_root(path)
+    cfg = load_config()
+    idx = DocuMindIndex(root, cfg)
+
+    if rebuild:
+        console.print(f"[yellow]Rebuilding index at[/yellow] {idx.index_dir}")
+        idx.destroy()
+
+    console.print(f"[bold]Indexing[/bold] {root}")
+    stats = _build_index_with_progress(idx)
+    idx.close()
+
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_row("Scanned files",  str(stats.scanned_files))
+    table.add_row("New",            f"[green]{stats.new_files}[/green]")
+    table.add_row("Changed",        f"[yellow]{stats.changed_files}[/yellow]")
+    table.add_row("Unchanged",      str(stats.unchanged_files))
+    table.add_row("Removed",        f"[red]{stats.removed_files}[/red]")
+    table.add_row("Embedded chunks", str(stats.embedded_chunks))
+    table.add_row("Total chunks",   str(stats.total_chunks))
+    console.print(table)
+    console.print(f"[green]Index ready[/green] at {idx.index_dir}")
+
+
+# --------------------------------------------------------------------- search
+
+
+@app.command("search")
+def cmd_search(
+    query: str = typer.Argument(..., help="Search query."),
+    path: Path | None = typer.Option(None, "--path", "-p", help="Project root."),
+    k: int | None = typer.Option(None, "--k", "-k", help="Number of results."),
+    show_code: bool = typer.Option(True, "--code/--no-code", help="Show code snippets."),
+    auto_index: bool | None = typer.Option(
+        None,
+        "--auto-index/--no-auto-index",
+        help="Build the index on the fly if missing (default: prompt when interactive).",
+    ),
+) -> None:
+    """Fast hybrid search. Typo-tolerant, no LLM required."""
+    root = _resolve_root(path)
+    cfg = _make_cfg(None, k)
+    idx = DocuMindIndex(root, cfg)
+    if not _ensure_index(idx, auto_index=auto_index):
+        raise typer.Exit(1)
+
+    hits = search(idx, query, cfg)
+    if not hits:
+        console.print("[yellow]No matches.[/yellow]")
+        return
+
+    for rank, hit in enumerate(hits, start=1):
+        bm25 = f"bm25#{hit.bm25_rank}" if hit.bm25_rank else "--"
+        vec = f"vec#{hit.vector_rank}" if hit.vector_rank else "--"
+        header = (
+            f"[bold cyan]{rank:>2}[/bold cyan] "
+            f"[green]{hit.rel_path}[/green]"
+            f":[magenta]{hit.start_line}-{hit.end_line}[/magenta] "
+            f"[dim]({bm25}, {vec}, rrf={hit.score:.4f})[/dim]"
+        )
+        console.print(header)
+        if show_code:
+            snippet = format_snippet(hit, cfg)
+            lang = hit.language if hit.language not in {"text", "pdf"} else "text"
+            try:
+                console.print(Syntax(snippet, lang, line_numbers=False, theme="ansi_dark", word_wrap=True))
+            except Exception:
+                console.print(snippet)
+        console.print()
+
+    idx.close()
+
+
+# ---------------------------------------------------------------------- ask
+
+
+@app.command("ask")
+def cmd_ask(
+    query: str = typer.Argument(..., help="Question to ask."),
+    path: Path | None = typer.Option(None, "--path", "-p", help="Project root."),
+    k: int | None = typer.Option(None, "--k", "-k", help="Number of snippets."),
+    model: str | None = typer.Option(None, "--model", "-m", help="Ollama model override."),
+    no_llm: bool = typer.Option(False, "--no-llm", help="Print ranked hits only (skip LLM)."),
+    auto_index: bool | None = typer.Option(
+        None,
+        "--auto-index/--no-auto-index",
+        help="Build the index on the fly if missing (default: prompt when interactive).",
+    ),
+) -> None:
+    """Ask a grounded question. Retrieves snippets and synthesizes with Gemma."""
+    root = _resolve_root(path)
+    cfg = _make_cfg(model, k)
+    idx = DocuMindIndex(root, cfg)
+    if not _ensure_index(idx, auto_index=auto_index):
+        raise typer.Exit(1)
+
+    hits = search(idx, query, cfg)
+    if not hits:
+        console.print("[yellow]No matches.[/yellow]")
+        raise typer.Exit(0)
+
+    if no_llm:
+        for rank, hit in enumerate(hits, start=1):
+            console.print(f"[bold]{rank}.[/bold] {hit.rel_path}:{hit.start_line}-{hit.end_line}")
+            console.print(format_snippet(hit, cfg))
+            console.print()
+        return
+
+    llm = OllamaClient(cfg)
+    if not llm.ping():
+        console.print(
+            f"[red]Ollama not reachable at {cfg.ollama_base_url}.[/red] "
+            "Start it with [bold]ollama serve[/bold] or use --no-llm."
+        )
+        raise typer.Exit(2)
+    if not llm.model_available():
+        console.print(
+            f"[yellow]Model {cfg.model!r} not pulled.[/yellow] "
+            f"Run: [bold]ollama pull {cfg.model}[/bold]"
+        )
+        raise typer.Exit(2)
+
+    context = hits_to_context(hits)
+    messages = build_messages(query, context)
+
+    buffer = ""
+    try:
+        with Live(Markdown(""), console=console, refresh_per_second=20) as live:
+            for tok in llm.chat_stream(messages):
+                buffer += tok
+                live.update(Markdown(buffer))
+    except LLMError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(3) from exc
+
+    refs = ", ".join(f"{h.rel_path}:{h.start_line}-{h.end_line}" for h in hits)
+    console.print(f"\n[dim]sources: {refs}[/dim]")
+    idx.close()
+
+
+# --------------------------------------------------------------------- chat
+
+
+@app.command("chat")
+def cmd_chat(
+    path: Path | None = typer.Option(None, "--path", "-p", help="Project root."),
+    model: str | None = typer.Option(None, "--model", "-m", help="Ollama model override."),
+    k: int | None = typer.Option(None, "--k", "-k", help="Snippets per question."),
+) -> None:
+    """Start an interactive chat grounded in your project."""
+    from .chat import run_chat
+
+    root = _resolve_root(path)
+    cfg = _make_cfg(model, k)
+    run_chat(root, cfg)
+
+
+# ---------------------------------------------------------------------- setup
+
+
+@app.command("setup")
+def cmd_setup(
+    path: Path | None = typer.Option(None, "--path", "-p", help="Project to scan for the recommendation."),
+    tier: str | None = typer.Option(None, "--tier", help="Force a tier: tiny, small, medium, or large."),
+    model: str | None = typer.Option(None, "--model", "-m", help="Force a specific Ollama model tag."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Accept recommendation and pull without prompting."),
+    skip_pull: bool = typer.Option(False, "--skip-pull", help="Do not run `ollama pull`."),
+) -> None:
+    """Pick and install the right local model for this machine + project."""
+    from .setup import run_setup
+
+    root = _resolve_root(path)
+    code = run_setup(root, tier=tier, model=model, yes=yes, skip_pull=skip_pull)
+    if code != 0:
+        raise typer.Exit(code)
+
+
+# --------------------------------------------------------------------- doctor
+
+
+@app.command("doctor")
+def cmd_doctor(
+    path: Path | None = typer.Option(None, "--path", "-p", help="Project root."),
+    pull: bool = typer.Option(False, "--pull", help="Pull the configured model if missing."),
+    write_config: bool = typer.Option(
+        False, "--write-config", help="Write ~/.config/documind/config.toml if missing."
+    ),
+) -> None:
+    """Check your environment: Ollama, model, and index state."""
+    root = _resolve_root(path)
+    cfg = load_config()
+
+    table = Table(title="DocuMind doctor", show_header=True, header_style="bold")
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Detail")
+
+    # Config
+    if write_config:
+        p = write_default_config()
+        table.add_row("config", "[green]written[/green]", str(p))
+    else:
+        table.add_row("config", "[green]ok[/green]", f"model={cfg.model}, emb={cfg.embedding_model}")
+
+    # Ollama
+    llm = OllamaClient(cfg)
+    if llm.ping():
+        table.add_row("ollama daemon", "[green]ok[/green]", cfg.ollama_base_url)
+    else:
+        table.add_row("ollama daemon", "[red]down[/red]", f"Run: ollama serve ({cfg.ollama_base_url})")
+
+    # Model
+    if llm.model_available():
+        table.add_row("model", "[green]ok[/green]", cfg.model)
+    else:
+        if pull:
+            try:
+                console.print(f"Pulling {cfg.model}...")
+                llm.pull()
+                table.add_row("model", "[green]pulled[/green]", cfg.model)
+            except LLMError as exc:
+                table.add_row("model", "[red]error[/red]", str(exc))
+        else:
+            table.add_row(
+                "model", "[yellow]missing[/yellow]", f"Run: ollama pull {cfg.model}"
+            )
+
+    # Index
+    idx = DocuMindIndex(root, cfg)
+    if idx.exists():
+        chunks = len(idx.all_chunks())
+        table.add_row("index", "[green]ok[/green]", f"{chunks} chunks at {idx.index_dir}")
+    else:
+        table.add_row("index", "[yellow]none[/yellow]", f"Run: documind index {root}")
+    idx.close()
+
+    console.print(table)
+
+
+# --------------------------------------------------------------------- reset
+
+
+@app.command("reset")
+def cmd_reset(
+    path: Path | None = typer.Option(None, "--path", "-p", help="Project root."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation."),
+) -> None:
+    """Delete the project's index directory (`.documind/`)."""
+    root = _resolve_root(path)
+    cfg = load_config()
+    idx = DocuMindIndex(root, cfg)
+    if not idx.index_dir.exists():
+        console.print("[yellow]Nothing to delete.[/yellow]")
+        return
+    if not yes:
+        confirm = typer.confirm(f"Delete {idx.index_dir}?", default=False)
+        if not confirm:
+            raise typer.Exit(1)
+    idx.destroy()
+    console.print(f"[green]Removed[/green] {idx.index_dir}")
+
+
+def main() -> None:
+    try:
+        app()
+    except KeyboardInterrupt:
+        console.print()
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()

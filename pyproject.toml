@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "documind"
+version = "2.1.0"
+description = "Fast, typo-tolerant, pure-local semantic + keyword search for any codebase or docs, powered by hybrid retrieval and Ollama Gemma."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Henil Diyora" },
+]
+keywords = ["rag", "search", "code-search", "gemma", "ollama", "semantic-search", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Topic :: Text Processing :: Indexing",
+]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "lancedb>=0.13",
+    "pyarrow>=15",
+    "bm25s>=0.2",
+    "PyStemmer>=2.2",
+    "rapidfuzz>=3.9",
+    "fastembed>=0.3",
+    "ollama>=0.3",
+    "pypdf>=4.2",
+    "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+documind = "documind.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/Henildiyora/documind"
+Issues = "https://github.com/Henildiyora/documind/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/documind"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# B008 is the idiomatic pattern for Typer (`typer.Option(...)` in defaults).
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
