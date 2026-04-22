@@ -11,7 +11,7 @@ No VS Code extension. No cloud keys. One global CLI: `documind`.
 ## Install once, use everywhere
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/henildiyora7/DocuMind/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Henildiyora/DocuMind/main/install.sh | bash
 ```
 
 This installs `documind` as a **global command** via `pipx`. You never have to come back to this repo — `documind` works from any directory on your machine.
@@ -21,13 +21,13 @@ This installs `documind` as a **global command** via `pipx`. You never have to c
 
 ```bash
 # needs Python 3.10+ and pipx
-pipx install "git+https://github.com/henildiyora7/DocuMind.git"
+pipx install "git+https://github.com/Henildiyora/DocuMind.git"
 ```
 
 Or clone it and install editable:
 
 ```bash
-git clone https://github.com/henildiyora7/DocuMind.git
+git clone https://github.com/Henildiyora/DocuMind.git
 cd DocuMind
 pipx install .
 ```
