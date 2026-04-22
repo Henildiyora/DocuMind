@@ -2,12 +2,12 @@
 # DocuMind one-line installer.
 #
 # Usage:
-#     curl -fsSL https://raw.githubusercontent.com/henildiyora7/DocuMind/main/install.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/Henildiyora/DocuMind/main/install.sh | bash
 #
 # What it does:
 #   1. Ensures `pipx` is available (auto-installs on macOS / Linux).
 #   2. Installs DocuMind from GitHub into its own virtualenv via pipx.
-#   3. Adds the pipx bin directory to PATH for this shell session.
+#   3. Runs `pipx ensurepath` so the `documind` command is on PATH in new shells.
 #   4. Prints next steps (how to run `documind setup`).
 #
 # Re-run safe: upgrades an existing install.
@@ -21,7 +21,7 @@ log()  { printf "\033[1;34m[documind]\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m[documind]\033[0m %s\n" "$*" >&2; }
 fail() { printf "\033[1;31m[documind]\033[0m %s\n" "$*" >&2; exit 1; }
 
-have()  { command -v "$1" >/dev/null 2>&1; }
+have() { command -v "$1" >/dev/null 2>&1; }
 
 detect_python() {
     for candidate in python3.12 python3.11 python3.10 python3; do
@@ -65,8 +65,6 @@ ensure_pipx() {
             ;;
     esac
 
-    "$PY" -m pipx ensurepath >/dev/null 2>&1 || true
-
     local user_base
     user_base="$("$PY" -m site --user-base 2>/dev/null || echo "$HOME/.local")"
     export PATH="$user_base/bin:$HOME/.local/bin:$PATH"
@@ -88,26 +86,45 @@ install_documind() {
     fi
 }
 
+ensure_on_path() {
+    # Make the pipx apps dir visible to new shells (appends to ~/.zshrc,
+    # ~/.bashrc, etc.) and also to this script's remaining session.
+    pipx ensurepath >/dev/null 2>&1 || true
+    export PATH="$HOME/.local/bin:$PATH"
+}
+
 print_next_steps() {
-    local bin_dir
+    local bin_dir ollama_hint
     bin_dir="$(pipx environment --value PIPX_BIN_DIR 2>/dev/null || echo "$HOME/.local/bin")"
+
+    case "$(uname -s)" in
+        Darwin) ollama_hint="brew install ollama   # or https://ollama.com/download" ;;
+        Linux)  ollama_hint="curl -fsSL https://ollama.com/install.sh | sh" ;;
+        *)      ollama_hint="See https://ollama.com/download" ;;
+    esac
+
+    printf "\n\033[1;32mDocuMind installed.\033[0m\n"
 
     cat <<EOF
 
-$(printf "\033[1;32mDocuMind installed.\033[0m")
+The 'documind' command has been installed to:
+    ${bin_dir}
 
-The 'documind' command is now available globally.
+IMPORTANT: open a NEW terminal window (or run 'source ~/.zshrc' /
+'source ~/.bashrc') so that 'documind' is on your PATH. If you're on
+zsh and already in this shell, you can also run:
 
-Next steps:
+    export PATH="${bin_dir}:\$PATH"
+
+Then verify and set up:
+
+    documind --version
+    documind setup
+
+Full next steps:
 
   1. Make sure Ollama is installed and running:
-$(
-    case "$(uname -s)" in
-        Darwin) echo "         brew install ollama   # or https://ollama.com/download" ;;
-        Linux)  echo "         curl -fsSL https://ollama.com/install.sh | sh" ;;
-        *)      echo "         See https://ollama.com/download" ;;
-    esac
-)
+         ${ollama_hint}
          ollama serve &
 
   2. Pick and pull the right model for your project (interactive):
@@ -119,9 +136,6 @@ $(
          documind search "your query"
          documind ask "how does X work?"
 
-If 'documind' isn't found, add this to your shell profile and open a new terminal:
-    export PATH="$bin_dir:\$PATH"
-
 Uninstall later with:
     pipx uninstall documind
 
@@ -132,6 +146,7 @@ main() {
     detect_python
     ensure_pipx
     install_documind
+    ensure_on_path
     print_next_steps
 }
 
