@@ -22,6 +22,7 @@ from rich.table import Table
 
 from . import __version__
 from .config import Config, load_config, write_default_config
+from .freshness import maybe_warn_stale_index
 from .index import DocuMindIndex
 from .llm import LLMError, OllamaClient
 from .ollama_daemon import ensure_daemon_running, install_hint
@@ -45,7 +46,7 @@ def _resolve_root(path: Path | None) -> Path:
     return (path or Path.cwd()).resolve()
 
 
-def _build_index_with_progress(idx: DocuMindIndex):
+def _build_index_with_progress(idx: DocuMindIndex, *, force_rehash: bool = False):
     """Run a full incremental index build with a Rich progress UI.
 
     Returns the resulting :class:`IndexStats`.
@@ -71,7 +72,17 @@ def _build_index_with_progress(idx: DocuMindIndex):
                 tasks[phase] = progress.add_task(label, total=max(total, 1))
             progress.update(tasks[phase], completed=done, total=max(total, 1))
 
-        return idx.build_or_update(progress=on_progress)
+        return idx.build_or_update(progress=on_progress, force_rehash=force_rehash)
+
+
+def _effective_auto_index(
+    auto_index: bool | None,
+    init_index: bool | None,
+) -> bool | None:
+    """``--init-index`` overrides ``--auto-index`` when either is set."""
+    if init_index is not None:
+        return init_index
+    return auto_index
 
 
 def _ensure_index(
@@ -109,7 +120,14 @@ def _ensure_index(
         return False
 
     console.print(f"[bold]Indexing[/bold] {idx.project_root}")
-    _build_index_with_progress(idx)
+    try:
+        _build_index_with_progress(idx)
+    except TimeoutError:
+        console.print(
+            "[red]Another `documind index` (or `documind watch`) is running[/red] "
+            f"and holds the lock at {idx.project_root / '.documind-index.lock'}."
+        )
+        return False
     return True
 
 
@@ -202,6 +220,11 @@ def _root(
 def cmd_index(
     path: Path | None = typer.Argument(None, help="Project root (default: cwd)."),
     rebuild: bool = typer.Option(False, "--rebuild", help="Delete and rebuild from scratch."),
+    force_rehash: bool = typer.Option(
+        False,
+        "--force-rehash",
+        help="Re-read and re-hash every file (ignore mtime/size fast path).",
+    ),
 ) -> None:
     """Index a project (incremental by default)."""
     root = _resolve_root(path)
@@ -213,7 +236,15 @@ def cmd_index(
         idx.destroy()
 
     console.print(f"[bold]Indexing[/bold] {root}")
-    stats = _build_index_with_progress(idx)
+    try:
+        stats = _build_index_with_progress(idx, force_rehash=force_rehash)
+    except TimeoutError:
+        console.print(
+            "[red]Another indexing process holds the project lock.[/red]\n"
+            "Close the other terminal running `documind index` or `documind watch`, "
+            f"or remove a stale lock file: {root / '.documind-index.lock'}"
+        )
+        raise typer.Exit(1) from None
     idx.close()
 
     table = Table(show_header=False, box=None, pad_edge=False)
@@ -226,6 +257,30 @@ def cmd_index(
     table.add_row("Total chunks",   str(stats.total_chunks))
     console.print(table)
     console.print(f"[green]Index ready[/green] at {idx.index_dir}")
+
+
+@app.command("watch")
+def cmd_watch(
+    path: Path | None = typer.Option(None, "--path", "-p", help="Project root."),
+    debounce: float = typer.Option(
+        0.5,
+        "--debounce",
+        help="Seconds to wait after the last file change before indexing.",
+    ),
+) -> None:
+    """Watch files under the project and run incremental indexing after edits.
+
+    Requires: pip install 'documind[watch]' (brings in watchdog).
+    """
+    from .watch import run_watch
+
+    root = _resolve_root(path)
+    cfg = load_config()
+    try:
+        run_watch(root, cfg, debounce_sec=debounce, console=console)
+    except RuntimeError as exc:
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(1) from exc
 
 
 # --------------------------------------------------------------------- search
@@ -292,7 +347,17 @@ def cmd_search(
     auto_index: bool | None = typer.Option(
         None,
         "--auto-index/--no-auto-index",
-        help="Build the index on the fly if missing (default: prompt when interactive).",
+        help="Create index if missing only (does not refresh a stale index).",
+    ),
+    init_index: bool | None = typer.Option(
+        None,
+        "--init-index/--no-init-index",
+        help="Alias for --auto-index / --no-auto-index.",
+    ),
+    stale_warn: bool = typer.Option(
+        True,
+        "--stale-warn/--no-stale-warn",
+        help="Warn when the working tree looks newer than the last index.",
     ),
 ) -> None:
     """Fast hybrid search. Answers in natural language when a local model is available.
@@ -303,8 +368,11 @@ def cmd_search(
     root = _resolve_root(path)
     cfg = _make_cfg(None, k)
     idx = DocuMindIndex(root, cfg)
-    if not _ensure_index(idx, auto_index=auto_index):
+    eff = _effective_auto_index(auto_index, init_index)
+    if not _ensure_index(idx, auto_index=eff):
         raise typer.Exit(1)
+
+    maybe_warn_stale_index(console, idx, root, cfg, enabled=stale_warn)
 
     hits = search(idx, query, cfg)
     if not hits:
@@ -359,19 +427,33 @@ def cmd_ask(
     auto_index: bool | None = typer.Option(
         None,
         "--auto-index/--no-auto-index",
-        help="Build the index on the fly if missing (default: prompt when interactive).",
+        help="Create index if missing only (does not refresh a stale index).",
+    ),
+    init_index: bool | None = typer.Option(
+        None,
+        "--init-index/--no-init-index",
+        help="Alias for --auto-index / --no-auto-index.",
+    ),
+    stale_warn: bool = typer.Option(
+        True,
+        "--stale-warn/--no-stale-warn",
+        help="Warn when the working tree looks newer than the last index.",
     ),
 ) -> None:
     """Ask a grounded question. Retrieves snippets and synthesizes with Gemma."""
     root = _resolve_root(path)
     cfg = _make_cfg(model, k)
     idx = DocuMindIndex(root, cfg)
-    if not _ensure_index(idx, auto_index=auto_index):
+    eff = _effective_auto_index(auto_index, init_index)
+    if not _ensure_index(idx, auto_index=eff):
         raise typer.Exit(1)
+
+    maybe_warn_stale_index(console, idx, root, cfg, enabled=stale_warn)
 
     hits = search(idx, query, cfg)
     if not hits:
         console.print("[yellow]No matches.[/yellow]")
+        idx.close()
         raise typer.Exit(0)
 
     if no_llm:
@@ -379,6 +461,7 @@ def cmd_ask(
             console.print(f"[bold]{rank}.[/bold] {hit.rel_path}:{hit.start_line}-{hit.end_line}")
             console.print(format_snippet(hit, cfg))
             console.print()
+        idx.close()
         return
 
     llm = _ensure_llm_ready(cfg)
@@ -523,6 +606,12 @@ def cmd_doctor(
         table.add_row("index", "[green]ok[/green]", f"{chunks} chunks at {idx.index_dir}")
     else:
         table.add_row("index", "[yellow]none[/yellow]", f"Run: documind index {root}")
+    table.add_row(
+        "workflow",
+        "[dim]tip[/dim]",
+        "After `git checkout` / merge, run `documind index`. "
+        "Only one indexer at a time (see `.documind-index.lock`).",
+    )
     idx.close()
 
     console.print(table)

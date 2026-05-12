@@ -44,9 +44,11 @@ Search is ready the moment DocuMind is installed. No Ollama required.
 
 ```bash
 cd ~/code/any-project
-documind index                       # incremental, only re-reads changed files
+documind index                       # incremental; mtime/size fast path skips re-hashing unchanged files
 documind search "auth middleware"    # fast, typo-tolerant ranked snippets
 ```
+
+Use **`documind index --force-rehash`** if you suspect content changed without mtime/size updating (rare). **`--rebuild`** wipes `.documind/` and starts from scratch.
 
 That's the whole happy path. Everything below is optional.
 
@@ -97,6 +99,30 @@ cd ~/notes/research-pdfs  && documind index && documind search "attention heads"
 
 Each project gets its own `.documind/` folder (git-ignored) with its vector + keyword index.
 
+### Development workflow (stale index)
+
+`documind search` / `documind ask` read the **last** index on disk. They do **not** auto-refresh when you save files.
+
+- After edits, run **`documind index`** again (incremental: only changed files are re-embedded).
+- After **`git checkout`**, merge, or rebase, run **`documind index`** so results match the new tree.
+- Optional: keep an index hot while coding with **`documind watch`** (requires `pip install 'documind[watch]'`).
+- Only **one** `documind index` / `documind watch` should run per project at a time; a lock file **`.documind-index.lock`** (next to `.documind/`, git-ignored) enforces this.
+
+If your working tree looks newer than the last index, `search` / `ask` print a yellow hint (suppress with **`--no-stale-warn`** for scripts).
+
+<details>
+<summary>Optional git hook (post-checkout)</summary>
+
+```bash
+# ~/.git-templates or add manually to .git/hooks/post-checkout
+#!/bin/sh
+command -v documind >/dev/null 2>&1 && documind index || true
+```
+
+Make it executable: `chmod +x .git/hooks/post-checkout`
+
+</details>
+
 ---
 
 ## Model tiers
@@ -131,6 +157,7 @@ documind setup --tier small       # force a tier
 | Command                        | What it does                                                                  |
 |-------------------------------|-------------------------------------------------------------------------------|
 | `documind index [PATH]`       | Build or incrementally update the project index. No model needed.             |
+| `documind watch [PATH]`       | Watch files and re-run incremental indexing after saves (`documind[watch]`).    |
 | `documind search "query"`     | Ranked snippets, typo-tolerant. Adds a local-LLM answer on top if a model is ready. |
 | `documind ask "question"`     | Retrieval + local LLM synthesis. Streams Markdown to your terminal.           |
 | `documind chat`               | Interactive REPL. `/help`, `/clear`, `/k`, `/model`, `/exit`.                 |
@@ -142,10 +169,12 @@ Handy flags:
 
 - `--path /some/dir` on any command to target a different project.
 - `--k N` to change the number of retrieved snippets.
-- `--auto-index / --no-auto-index` on `search` / `ask`.
+- **`--auto-index` / `--no-auto-index`** (and alias **`--init-index` / `--no-init-index`**) on `search` / `ask`: **create the index only if it is missing** — they do **not** refresh an outdated index after you edit code.
+- **`--stale-warn` / `--no-stale-warn`** on `search` / `ask`: warn when files on disk look newer than the last index (default: warn).
 - `--summary / --no-summary` on `search` to force or skip the local-LLM answer.
 - `--code / --no-code` on `search` to include full snippet bodies.
 - `--no-llm` on `ask` to skip synthesis and only print ranked hits.
+- **`documind index --force-rehash`** to ignore the mtime/size fast path and re-hash every file.
 
 ---
 
@@ -175,11 +204,12 @@ flowchart LR
 
 ```
 <your-project>/
+  .documind-index.lock   -- exclusive lock while indexing (git-ignored)
   .documind/
     meta.sqlite    -- files + chunks tables (ground truth)
     lance/         -- LanceDB vector table
     bm25/          -- saved bm25s retriever
-    state.json     -- schema + embedding-model info
+    state.json     -- schema, embedding model, indexed_at, max_mtime_at_index
 ```
 
 ---

@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +27,7 @@ import pyarrow as pa
 from .chunker import Chunk, FileRecord, chunks_for_file, scan_files
 from .config import Config, index_dir_for
 from .embeddings import embed_texts
+from .index_lock import index_write_lock
 
 SCHEMA_VERSION = 1
 
@@ -135,19 +137,17 @@ class DocuMindIndex:
     def exists(self) -> bool:
         return self.meta_path.exists() and self.lance_path.exists()
 
-    def _write_state(self) -> None:
-        self.state_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "embedding_model": self.cfg.embedding_model,
-                    "embedding_dim": self.cfg.embedding_dim,
-                    "project_root": self.project_root.as_posix(),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+    def _write_state(self, *, max_mtime_at_index: float, chunk_count: int) -> None:
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "embedding_model": self.cfg.embedding_model,
+            "embedding_dim": self.cfg.embedding_dim,
+            "project_root": self.project_root.as_posix(),
+            "indexed_at": datetime.now(timezone.utc).isoformat(),
+            "max_mtime_at_index": max_mtime_at_index,
+            "chunk_count": chunk_count,
+        }
+        self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def read_state(self) -> dict:
         if not self.state_path.exists():
@@ -207,9 +207,9 @@ class DocuMindIndex:
 
     # ---------------------------------------------------------------- SQLite
 
-    def _get_known_files(self) -> dict[str, tuple[str, float]]:
-        cur = self.conn.execute("SELECT rel_path, file_hash, mtime FROM files")
-        return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+    def _get_known_files(self) -> dict[str, tuple[str, float, int]]:
+        cur = self.conn.execute("SELECT rel_path, file_hash, mtime, size FROM files")
+        return {row[0]: (row[1], row[2], row[3]) for row in cur.fetchall()}
 
     def _upsert_file_record(self, rec: FileRecord) -> None:
         self.conn.execute(
@@ -314,22 +314,46 @@ class DocuMindIndex:
     def build_or_update(
         self,
         progress: Callable[[str, int, int], None] | None = None,
+        *,
+        force_rehash: bool = False,
     ) -> IndexStats:
-        """Full incremental indexing pass.
+        """Full incremental indexing pass (exclusive lock, one writer per project)."""
+        with index_write_lock(self.project_root):
+            return self._build_or_update_locked(
+                progress, force_rehash=force_rehash,
+            )
 
-        Args:
-            progress: optional callback(phase, done, total).
-
-        Returns:
-            IndexStats summary.
-        """
+    def _build_or_update_locked(
+        self,
+        progress: Callable[[str, int, int], None] | None = None,
+        *,
+        force_rehash: bool = False,
+    ) -> IndexStats:
+        """Implementation of :meth:`build_or_update` while holding the index lock."""
         self._ensure_dirs()
-        stats = IndexStats()
+        state = self.read_state()
+        if state and self.meta_path.exists() and self.lance_path.exists():
+            old_m = state.get("embedding_model")
+            old_d = state.get("embedding_dim")
+            mismatched = False
+            if old_m is not None and old_m != self.cfg.embedding_model:
+                mismatched = True
+            if old_d is not None and int(old_d) != int(self.cfg.embedding_dim):
+                mismatched = True
+            if mismatched:
+                self.destroy()
+                self._ensure_dirs()
 
-        # 1) Scan
-        records = scan_files(self.project_root, self.cfg)
-        stats.scanned_files = len(records)
+        stats = IndexStats()
         known = self._get_known_files()
+
+        records = scan_files(
+            self.project_root,
+            self.cfg,
+            known_files=known,
+            force_rehash=force_rehash,
+        )
+        stats.scanned_files = len(records)
 
         new_or_changed: list[FileRecord] = []
         removed: list[str] = []
@@ -351,16 +375,14 @@ class DocuMindIndex:
 
         stats.removed_files = len(removed)
 
-        # 2) Remove stale rows/vectors
         to_purge_paths = removed + [r.rel_path for r in new_or_changed]
         stale_hashes = self._delete_file_rows(to_purge_paths)
         self._lance_delete_by_file_hash(stale_hashes)
 
-        # 3) Chunk + embed new/changed files
         all_new_chunks: list[Chunk] = []
         for idx, rec in enumerate(new_or_changed):
             if progress:
-                progress("chunking", idx, len(new_or_changed))
+                progress("chunking", idx, max(len(new_or_changed), 1))
             chunks = chunks_for_file(rec, self.cfg)
             all_new_chunks.extend(chunks)
             self._upsert_file_record(rec)
@@ -379,15 +401,27 @@ class DocuMindIndex:
 
         self.conn.commit()
 
-        # 4) Rebuild BM25 from final state
-        if progress:
-            progress("bm25", 0, 1)
-        total = self.rebuild_bm25()
-        stats.total_chunks = total
-        if progress:
-            progress("bm25", 1, 1)
+        need_bm25 = (
+            stats.new_files + stats.changed_files + stats.removed_files > 0
+            or stats.embedded_chunks > 0
+            or not (self.bm25_path / "chunk_ids.json").exists()
+        )
+        if need_bm25:
+            if progress:
+                progress("bm25", 0, 1)
+            total = self.rebuild_bm25()
+            stats.total_chunks = total
+            if progress:
+                progress("bm25", 1, 1)
+        else:
+            row = self.conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
+            stats.total_chunks = int(row[0]) if row else 0
 
-        self._write_state()
+        max_mtime = max((r.mtime for r in records), default=0.0)
+        self._write_state(
+            max_mtime_at_index=max_mtime,
+            chunk_count=stats.total_chunks,
+        )
         return stats
 
     # -------------------------------------------------------------- delete

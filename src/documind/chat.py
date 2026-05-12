@@ -11,6 +11,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 
 from .config import Config
+from .freshness import maybe_warn_stale_index
 from .index import DocuMindIndex
 from .llm import LLMError, OllamaClient
 from .ollama_daemon import ensure_daemon_running, install_hint
@@ -36,6 +37,8 @@ def run_chat(project_root: Path, cfg: Config) -> None:
             "[red]No index found.[/red] Run [bold]documind index[/bold] first."
         )
         return
+
+    maybe_warn_stale_index(console, idx, project_root, cfg, enabled=True)
 
     import shutil
 

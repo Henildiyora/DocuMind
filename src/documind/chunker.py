@@ -151,23 +151,48 @@ def _read_text(path: Path) -> str:
     return ""
 
 
-def scan_files(root: Path, cfg: Config) -> list[FileRecord]:
-    """Walk the project and return FileRecord metadata (no text loaded yet)."""
+def scan_files(
+    root: Path,
+    cfg: Config,
+    *,
+    known_files: dict[str, tuple[str, float, int]] | None = None,
+    force_rehash: bool = False,
+) -> list[FileRecord]:
+    """Walk the project and return FileRecord metadata (no text loaded yet).
+
+    When ``known_files`` maps ``rel_path -> (file_hash, mtime, size)`` from a
+    prior index and ``force_rehash`` is False, files whose mtime and size match
+    reuse the stored hash without re-reading bytes (SHA1 fast path).
+
+    If content changed without mtime/size changing (rare), run
+    ``documind index --force-rehash``.
+    """
     records: list[FileRecord] = []
     root = root.resolve()
+    known = known_files or {}
     for p in iter_source_files(root, cfg.max_file_bytes):
         try:
             stat = p.stat()
-            data = p.read_bytes()
+            rel = p.relative_to(root).as_posix()
+            if (
+                not force_rehash
+                and (prev := known.get(rel)) is not None
+                and stat.st_mtime == prev[1]
+                and stat.st_size == prev[2]
+            ):
+                file_hash = prev[0]
+            else:
+                data = p.read_bytes()
+                file_hash = _sha1_bytes(data)
         except OSError:
             continue
         records.append(
             FileRecord(
                 path=p.as_posix(),
-                rel_path=p.relative_to(root).as_posix(),
+                rel_path=rel,
                 size=stat.st_size,
                 mtime=stat.st_mtime,
-                file_hash=_sha1_bytes(data),
+                file_hash=file_hash,
                 language=_detect_language(p),
             )
         )

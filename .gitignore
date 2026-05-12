@@ -28,6 +28,9 @@ hf_cache/
 # DocuMind per-project index (stores embeddings + BM25 + sqlite)
 .documind/
 
+# Exclusive indexer lock (next to .documind/)
+.documind-index.lock
+
 # Logs
 *.log
 
