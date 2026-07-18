@@ -1,0 +1,65 @@
+name: release
+
+# Build prebuilt binaries on a version tag and publish them to a GitHub Release.
+# tree-sitter uses cgo, so each target is built on its own NATIVE runner instead
+# of cross-compiling (cgo cross-compilation needs per-target C toolchains).
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # required for softprops/action-gh-release to create/upload
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14 # Apple Silicon
+            goos: darwin
+            goarch: arm64
+          - runner: macos-13 # Intel
+            goos: darwin
+            goarch: amd64
+          - runner: ubuntu-22.04 # older glibc = broader Linux compatibility
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-22.04-arm
+            goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          check-latest: true
+
+      - name: Build (cgo, version-stamped)
+        env:
+          CGO_ENABLED: "1"
+          # Native build: GOOS/GOARCH already match the runner, so cgo works.
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/Henildiyora/DocuMind/internal/cli.Version=${GITHUB_REF_NAME}" \
+            -o dist/documind ./cmd/documind
+
+      - name: Package tarball + checksum
+        run: |
+          asset="documind_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz"
+          tar -C dist -czf "$asset" documind
+          shasum -a 256 "$asset" > "$asset.sha256"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            documind_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz
+            documind_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz.sha256

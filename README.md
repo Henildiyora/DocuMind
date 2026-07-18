@@ -11,22 +11,44 @@ pure-Go vector store and keyword index, plus AST-aware chunking via tree-sitter.
 
 ---
 
-## Build & install
+## Install
 
-Requires Go 1.21+ and a C toolchain (tree-sitter uses cgo).
+One command. No Go, no compiler needed — it downloads a prebuilt binary for your
+OS/CPU:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Henildiyora/DocuMind/main/install.sh | bash
+```
+
+Then:
+
+```bash
+documind --help
+```
+
+The installer picks `macOS`/`Linux` and `amd64`/`arm64` automatically, verifies a
+SHA-256 checksum, and installs to `/usr/local/bin` (or `~/.local/bin` if that
+isn't writable). Options:
+
+```bash
+DOCUMIND_VERSION=v0.1.0 curl -fsSL .../install.sh | bash   # pin a version
+DOCUMIND_INSTALL_DIR=~/bin curl -fsSL .../install.sh | bash # custom location
+```
+
+<details>
+<summary>Build from source (contributors)</summary>
+
+Requires Go 1.24+ and a C toolchain (tree-sitter uses cgo).
 
 ```bash
 git clone https://github.com/Henildiyora/DocuMind.git
 cd DocuMind
-make build            # produces ./bin/documind
-./bin/documind --help
+make build              # produces ./bin/documind (version-stamped via git describe)
+make install            # installs to ~/.local/bin
+sudo make install PREFIX=/usr/local   # or system-wide
 ```
 
-Put it on your PATH:
-
-```bash
-cp bin/documind /usr/local/bin/     # or anywhere on $PATH
-```
+</details>
 
 ---
 
@@ -318,6 +340,27 @@ rm -rf ~/.config/documind      # optional: start from Go defaults
 
 Per-project indexes live in each project's `.documind/` directory — delete one
 with `documind reset` inside that project.
+
+---
+
+## Cutting a release
+
+Prebuilt binaries are produced by [`.github/workflows/release.yml`](.github/workflows/release.yml)
+whenever a `v*` tag is pushed. It builds native cgo binaries for
+macOS (arm64/amd64) and Linux (amd64/arm64) and attaches them (plus SHA-256
+checksums) to the GitHub Release. The tag name is stamped into the binary
+(`documind --version`).
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Once the workflow finishes, `install.sh` will find and install that release.
+
+> Note: the `raw.githubusercontent.com/.../main/install.sh` URL resolves only
+> after `install.sh` lands on the default branch (`main`). While testing from a
+> feature branch, run `./install.sh` locally instead.
 
 ---
 

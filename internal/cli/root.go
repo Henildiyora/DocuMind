@@ -11,8 +11,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Version is the documind CLI version.
-const Version = "0.1.0-go"
+// Version is the documind CLI version. It defaults to "dev" for local/source
+// builds and is overridden at release time via -ldflags "-X ...cli.Version=vX.Y.Z".
+var Version = "dev"
 
 // debug is set by the persistent --debug flag; commands print full error chains
 // when true, otherwise short user-facing messages.
