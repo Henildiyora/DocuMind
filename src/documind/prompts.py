@@ -38,19 +38,28 @@ Rules:
 - Fix obvious typos and grammar in "normalized".
 - Infer the search intent (e.g. "docker file" -> "Dockerfile contents").
 - Provide 2-3 short alternate phrasings that would help keyword/semantic search.
+- For project-overview questions ("explain this project", "what is this"),
+  include alternates like "README project overview" and "main.py entrypoint".
+- Prefer source code and README over generated report dumps.
 - Do not answer the question; only rewrite it for retrieval.
 """
 
 
 CLARIFY_PROMPT = """You help disambiguate vague questions about a codebase.
 
-Reply with JSON only (no markdown):
-{"question": "short clarifying question?", "options": ["option A", "option B", ...]}
+Reply with JSON only (no markdown).
+
+If the question is already clear enough to answer (including overview
+questions like "explain this project" or "how many files"), reply:
+{"ambiguous": false}
+
+Only if the question is genuinely ambiguous (e.g. multiple same-named files,
+or two unrelated interpretations), reply:
+{"ambiguous": true, "question": "short clarifying question?", "options": ["A", "B", ...]}
 
 Rules:
-- 2 to 4 concrete options the user can pick with arrow keys.
-- Options should name files, features, or interpretations — not vague advice.
-- If the question is already clear, still offer the most likely interpretations.
+- 2 to 4 concrete options naming files, features, or interpretations.
+- Do NOT invent ambiguity for clear questions.
 """
 
 

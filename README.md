@@ -90,6 +90,7 @@ If you want `documind ask` / `documind chat`, you need a small local model. Setu
 documind models          # full catalog table
 documind setup           # hardware-aware pick + optional pull
 documind ask why does the rate limiter reset early   # quotes optional
+documind ask             # same as chat — interactive multi-turn REPL
 documind chat            # interactive REPL with persistent threads
 ```
 
@@ -99,6 +100,8 @@ You'll need Ollama installed first:
 - Linux: `curl -fsSL https://ollama.com/install.sh | sh`
 
 Friendly errors (missing Ollama, daemon down, model not pulled, missing index) print 1–3 plain lines with the exact next command. Pass **`-v` / `--debug`** only when you want a full stack trace.
+
+If an incremental `documind index` prints `New 0` / `Embedded chunks 0`, the index is already up to date (not empty). After changing ignore rules or pulling a large dump of generated files, run **`documind index --rebuild`** once so those paths are dropped.
 
 ### keep_alive (resource efficiency)
 
@@ -114,7 +117,11 @@ documind setup --keep-alive 5m         # persist the default in config.toml
 
 ### Chat threads
 
-Conversations persist per project under `.documind/chats/<name>.json`. The default thread is `default`. `documind ask` writes to `default` so you can continue later with `documind chat`.
+Conversations persist per project under `.documind/chats/<name>.json`. The default thread is `default`.
+
+- **`documind ask`** with a question is one-shot (and writes the turn to `default`).
+- **`documind ask`** with **no question** opens the interactive REPL (same as `documind chat`).
+- After a one-shot ask, DocuMind prints a tip to continue in chat.
 
 Inside chat:
 
@@ -131,7 +138,7 @@ Follow-ups use a windowed history (`chat_history_turns`, default 4) for retrieva
 
 ### Query understanding (when a model is configured)
 
-For `ask` / `chat`, DocuMind can rewrite typos, try a few alternate phrasings, boost filename matches (e.g. "docker file" → `Dockerfile`), drop weak RRF hits, and — if still ambiguous — show an arrow-key multiple-choice clarification. Use `--no-clarify` to skip the picker. Zero-model `documind search` is unchanged.
+For `ask` / `chat`, DocuMind can rewrite typos, try a few alternate phrasings, boost filename matches (e.g. "docker file" → `Dockerfile`), prefer README/`main.py` for overview questions, demote `generated_reports` / `report.json` noise, drop weak RRF hits, and — only when genuinely ambiguous — show an arrow-key multiple-choice clarification. Overview questions like "explain this project" never interrupt with a clarifier. Use `--no-clarify` to skip the picker. Zero-model `documind search` still runs hybrid retrieval; artifact demotion / entrypoint boost also apply so summaries stay grounded.
 
 ---
 
@@ -208,7 +215,7 @@ documind setup --keep-alive 5m    # persist unload-after-idle default
 | `documind index [PATH]`       | Build or incrementally update the project index. No model needed.             |
 | `documind watch [PATH]`       | Watch files and re-run incremental indexing after saves (`documind[watch]`).    |
 | `documind search "query"`     | Ranked snippets, typo-tolerant. Adds a local-LLM answer on top if a model is ready. |
-| `documind ask <question>`     | Retrieval + local LLM synthesis. Quotes optional; writes to the `default` thread. |
+| `documind ask [question]`     | One-shot Q&A, or open chat REPL when no question is given.                        |
 | `documind chat`               | Interactive REPL with persistent threads under `.documind/chats/`.            |
 | `documind setup`              | Optional. Hardware-aware pick + pull a local model for `ask` / `chat`.        |
 | `documind models`             | List the full free/local model catalog.                                       |

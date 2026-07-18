@@ -236,7 +236,9 @@ def run_chat(
             thread.messages = thread.messages[-max_msgs:]
         save_thread(project_root, thread, cfg)
 
-        refs = ", ".join(
-            f"{h.rel_path}:{h.start_line}-{h.end_line}" for h in hits[:session_k]
-        )
-        console.print(f"[dim]sources: {refs}[/dim]")
+        console.print("[bold]Sources[/bold]")
+        for h in hits[:session_k]:
+            console.print(
+                f"  [green]{h.rel_path}[/green]"
+                f":[magenta]{h.start_line}-{h.end_line}[/magenta]"
+            )

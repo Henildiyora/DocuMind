@@ -51,6 +51,8 @@ IGNORE_DIRS: frozenset[str] = frozenset({
     # Docs / coverage artifacts (the stuff that polluted search before)
     "htmlcov", "coverage", ".nyc_output",
     "site", "_site", "_build", "public",
+    # Generated report dumps (interview/RAG output, not source of truth)
+    "generated_reports", "generated",
     # DocuMind itself
     ".documind",
 })
@@ -62,6 +64,8 @@ IGNORE_FILES: frozenset[str] = frozenset({
     "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
     "poetry.lock", "Pipfile.lock",
     "Cargo.lock", "go.sum",
+    # Generated interview / RAG report blobs
+    "report.json",
     # OS / editor scratch
     ".DS_Store", "Thumbs.db",
 })
@@ -74,6 +78,18 @@ IGNORE_FILE_GLOBS: tuple[str, ...] = (
     "*.bundle.css",
     "*.lock",
 )
+
+
+def is_ignored_dirname(name: str) -> bool:
+    """Return True if a directory name should be skipped while walking.
+
+    Exact names in ``IGNORE_DIRS`` are skipped, plus any directory ending
+    in ``_venv`` (e.g. ``github_summarizer_venv``).
+    """
+    if name in IGNORE_DIRS or name.startswith("."):
+        return True
+    return name.endswith("_venv") or name.endswith("-venv")
+
 
 
 def _config_path() -> Path:

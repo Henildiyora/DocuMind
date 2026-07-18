@@ -312,7 +312,19 @@ def cmd_index(
     table.add_row("Embedded chunks", str(stats.embedded_chunks))
     table.add_row("Total chunks",   str(stats.total_chunks))
     console.print(table)
-    console.print(f"[green]Index ready[/green] at {idx.index_dir}")
+    idle = (
+        stats.new_files == 0
+        and stats.changed_files == 0
+        and stats.removed_files == 0
+        and stats.embedded_chunks == 0
+    )
+    if idle and stats.total_chunks > 0:
+        console.print(
+            f"[green]Index already up to date[/green] "
+            f"({stats.total_chunks} chunks) at {idx.index_dir}"
+        )
+    else:
+        console.print(f"[green]Index ready[/green] at {idx.index_dir}")
 
     # Re-load config in case another process wrote it; offer setup if needed.
     _maybe_offer_setup(root, load_config())
@@ -429,6 +441,12 @@ def cmd_search(
             idx.close()
             return
 
+        # Demote generated reports / boost README+entrypoints for overview Qs.
+        # Keeps snippet-only search readable; summary path especially needs this.
+        from .query_understand import refine_hits
+
+        hits = refine_hits(hits, query, cfg)
+
         llm = None if summary is False else _llm_ready_nonblocking(cfg)
 
         if llm is not None:
@@ -470,9 +488,12 @@ def cmd_search(
 
 @app.command("ask")
 def cmd_ask(
-    query: list[str] = typer.Argument(
-        ...,
-        help="Question to ask (unquoted trailing words are joined automatically).",
+    query: list[str] | None = typer.Argument(
+        None,
+        help=(
+            "Question to ask (unquoted trailing words are joined). "
+            "Omit the question to open interactive chat."
+        ),
     ),
     path: Path | None = typer.Option(None, "--path", "-p", help="Project root."),
     k: int | None = typer.Option(None, "--k", "-k", help="Number of snippets."),
@@ -507,23 +528,30 @@ def cmd_ask(
         help="Warn when the working tree looks newer than the last index.",
     ),
 ) -> None:
-    """Ask a grounded question. Retrieves snippets and synthesizes with a local LLM.
+    """Ask a grounded question, or open chat when no question is given.
 
     Trailing words are joined, so quotes are optional::
 
         documind ask why does the rate limiter reset early
+
+    With no question, this starts the same interactive REPL as ``documind chat``::
+
+        documind ask
     """
-    from .query_understand import retrieve_for_question
+    from .chat import run_chat
+    from .query_understand import refine_hits, retrieve_for_question
     from .threads import append_turn
 
     try:
-        joined = " ".join(query).strip()
-        if not joined:
-            console.print("[red]Empty question.[/red] Usage: documind ask <your question>")
-            raise typer.Exit(1)
-
+        joined = " ".join(query or []).strip()
         root = _resolve_root(path)
         cfg = _make_cfg(model, k, keep_alive)
+
+        # Bare `documind ask` → conversation mode (same as `documind chat`).
+        if not joined:
+            run_chat(root, cfg)
+            return
+
         idx = DocuMindIndex(root, cfg)
         eff = _effective_auto_index(auto_index, init_index)
         if not _ensure_index(idx, auto_index=eff):
@@ -532,7 +560,7 @@ def cmd_ask(
         maybe_warn_stale_index(console, idx, root, cfg, enabled=stale_warn)
 
         if no_llm:
-            hits = search(idx, joined, cfg)
+            hits = refine_hits(search(idx, joined, cfg), joined, cfg)
             if not hits:
                 console.print("[yellow]No matches.[/yellow]")
                 idx.close()
@@ -573,10 +601,17 @@ def cmd_ask(
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(3) from exc
 
-        refs = ", ".join(f"{h.rel_path}:{h.start_line}-{h.end_line}" for h in hits)
-        console.print(f"\n[dim]sources: {refs}[/dim]")
+        console.print("\n[bold]Sources[/bold]")
+        for hit in hits:
+            console.print(
+                f"  [green]{hit.rel_path}[/green]"
+                f":[magenta]{hit.start_line}-{hit.end_line}[/magenta]"
+            )
+        console.print(
+            "[dim]Tip: run `documind ask` (no question) or `documind chat` "
+            "to continue this thread.[/dim]"
+        )
 
-        # Persist to the default thread so `documind chat` can continue.
         with contextlib.suppress(Exception):
             append_turn(root, "default", joined, buffer, cfg=cfg)
 

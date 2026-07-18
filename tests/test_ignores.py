@@ -1,12 +1,11 @@
-"""Generated artifacts (htmlcov, coverage.xml, lockfiles, *.min.js) must not
-make it into the index."""
+"""Generated artifacts and report dumps must not make it into the index."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from documind.chunker import iter_source_files
-from documind.config import load_config
+from documind.config import is_ignored_dirname, load_config
 
 
 def _write(path: Path, body: str = "x") -> None:
@@ -49,3 +48,36 @@ def test_htmlcov_and_coverage_are_excluded(tmp_path: Path) -> None:
         "node_modules/leftpad/index.js",
     }
     assert forbidden.isdisjoint(picked), f"unexpected files got through: {forbidden & set(picked)}"
+
+
+def test_generated_reports_and_report_json_excluded(tmp_path: Path) -> None:
+    cfg = load_config()
+    _write(tmp_path / "main.py", "print(1)\n")
+    _write(tmp_path / "README.md", "# App\n")
+    _write(
+        tmp_path / "generated_reports" / "candidate_1" / "report.json",
+        '{"q": "Explain Docker experience"}\n',
+    )
+    _write(tmp_path / "report.json", '{"noise": true}\n')
+    _write(tmp_path / "github_summarizer_venv" / "lib" / "x.py", "x=1\n")
+    _write(tmp_path / "myproj_venv" / "sitecustomize.py", "pass\n")
+
+    picked = {
+        p.relative_to(tmp_path).as_posix()
+        for p in iter_source_files(tmp_path, cfg.max_file_bytes)
+    }
+
+    assert "main.py" in picked
+    assert "README.md" in picked
+    assert "generated_reports/candidate_1/report.json" not in picked
+    assert "report.json" not in picked
+    assert not any("venv" in p for p in picked)
+
+
+def test_ignored_dirname_helpers() -> None:
+    assert is_ignored_dirname("generated_reports")
+    assert is_ignored_dirname("github_summarizer_venv")
+    assert is_ignored_dirname("foo_venv")
+    assert is_ignored_dirname(".git")
+    assert not is_ignored_dirname("app")
+    assert not is_ignored_dirname("src")

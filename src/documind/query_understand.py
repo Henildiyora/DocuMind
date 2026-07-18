@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 from rich.console import Console
@@ -25,13 +26,72 @@ _FILE_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_OVERVIEW_RE = re.compile(
+    r"\b("
+    r"explain\s+(me\s+)?(this\s+)?project|"
+    r"what\s+is\s+this(\s+project)?|"
+    r"how\s+does\s+this\s+project\s+work|"
+    r"overview|summarize\s+(this\s+)?project|"
+    r"tell\s+me\s+about\s+(this\s+)?project|"
+    r"how\s+many\s+files|"
+    r"project\s+structure|"
+    r"what\s+does\s+this\s+(app|repo|codebase)\s+do"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_ENTRYPOINT_NAMES = frozenset({
+    "readme.md",
+    "readme",
+    "readme.rst",
+    "readme.txt",
+    "main.py",
+    "app.py",
+    "index.py",
+    "index.js",
+    "index.ts",
+    "pyproject.toml",
+    "package.json",
+    "cargo.toml",
+    "go.mod",
+    "dockerfile",
+    "makefile",
+})
+
+_ARTIFACT_PATH_MARKERS = (
+    "generated_reports/",
+    "/generated_reports/",
+    "generated/",
+    "/htmlcov/",
+    "htmlcov/",
+)
+
+_OVERVIEW_ALTERNATES = (
+    "README project overview",
+    "main.py entrypoint",
+    "application architecture",
+)
+
+
+def is_overview_intent(query: str) -> bool:
+    """True for broad project-overview / meta questions."""
+    return bool(_OVERVIEW_RE.search(query or ""))
+
+
+def is_artifact_path(rel_path: str) -> bool:
+    """True for generated report dumps and similar pollutants."""
+    p = (rel_path or "").replace("\\", "/").lower()
+    name = Path(p).name
+    if name == "report.json":
+        return True
+    return any(m in p for m in _ARTIFACT_PATH_MARKERS)
+
 
 def _extract_json_object(text: str) -> dict | None:
     """Best-effort extract of a JSON object from an LLM reply."""
     text = (text or "").strip()
     if not text:
         return None
-    # Strip markdown fences if present.
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fence:
         text = fence.group(1)
@@ -51,6 +111,7 @@ def rewrite_query(llm: OllamaClient, query: str, cfg: Config) -> tuple[str, list
     """Return (normalized_query, alternate_phrasings).
 
     On failure, returns the original query and an empty alternate list.
+    Overview queries always get README/entrypoint alternates appended.
     """
     messages = [
         {"role": "system", "content": QUERY_REWRITE_PROMPT},
@@ -59,21 +120,27 @@ def rewrite_query(llm: OllamaClient, query: str, cfg: Config) -> tuple[str, list
     try:
         raw = llm.chat(messages, keep_alive=cfg.keep_alive)
     except LLMError:
-        return query, []
+        normalized, alternates = query, []
+    else:
+        data = _extract_json_object(raw)
+        if not data:
+            normalized, alternates = query, []
+        else:
+            normalized = str(data.get("normalized") or query).strip() or query
+            alts_raw = data.get("alternates") or data.get("alternatives") or []
+            alternates = []
+            if isinstance(alts_raw, list):
+                for item in alts_raw:
+                    s = str(item).strip()
+                    if s and s.lower() != normalized.lower() and s not in alternates:
+                        alternates.append(s)
 
-    data = _extract_json_object(raw)
-    if not data:
-        return query, []
+    if is_overview_intent(query):
+        for alt in _OVERVIEW_ALTERNATES:
+            if alt.lower() != normalized.lower() and alt not in alternates:
+                alternates.append(alt)
 
-    normalized = str(data.get("normalized") or query).strip() or query
-    alts_raw = data.get("alternates") or data.get("alternatives") or []
-    alternates: list[str] = []
-    if isinstance(alts_raw, list):
-        for item in alts_raw:
-            s = str(item).strip()
-            if s and s.lower() != normalized.lower() and s not in alternates:
-                alternates.append(s)
-    return normalized, alternates[:3]
+    return normalized, alternates[:4]
 
 
 def _filename_hints(query: str) -> list[str]:
@@ -85,11 +152,42 @@ def _filename_hints(query: str) -> list[str]:
             hints.append(token)
         else:
             hints.append(token)
-    # "docker file" style already covered; also map spaced forms.
     q = query.lower()
     if "docker" in q and "file" in q and "dockerfile" not in hints:
         hints.append("dockerfile")
     return hints
+
+
+def _rescore(hits: list[SearchHit], score_fn) -> list[SearchHit]:
+    rescored = [
+        SearchHit(
+            chunk_id=h.chunk_id,
+            rel_path=h.rel_path,
+            language=h.language,
+            start_line=h.start_line,
+            end_line=h.end_line,
+            text=h.text,
+            score=score_fn(h),
+            bm25_rank=h.bm25_rank,
+            vector_rank=h.vector_rank,
+        )
+        for h in hits
+    ]
+    rescored.sort(key=lambda h: h.score, reverse=True)
+    return rescored
+
+
+def demote_artifact_hits(hits: list[SearchHit]) -> list[SearchHit]:
+    """Push generated_reports / report.json chunks below real source hits."""
+    if not hits:
+        return hits
+
+    def score_fn(hit: SearchHit) -> float:
+        if is_artifact_path(hit.rel_path):
+            return hit.score * 0.05
+        return hit.score
+
+    return _rescore(hits, score_fn)
 
 
 def boost_filename_matches(hits: list[SearchHit], query: str) -> list[SearchHit]:
@@ -99,33 +197,52 @@ def boost_filename_matches(hits: list[SearchHit], query: str) -> list[SearchHit]
         return hits
 
     def score_boost(hit: SearchHit) -> float:
+        if is_artifact_path(hit.rel_path):
+            return hit.score
         name = Path(hit.rel_path).name.lower()
         stem = Path(hit.rel_path).stem.lower()
         for h in hints:
             if h in (name, stem) or name.startswith(h) or h in name:
-                return hit.score + 1.0  # strong boost above typical RRF scores
-            # fuzzy-ish: dockerfile vs docker-file
+                return hit.score + 1.0
             compact = name.replace("-", "").replace("_", "")
             if h.replace("-", "") in compact:
                 return hit.score + 0.5
         return hit.score
 
-    rescored = [
-        SearchHit(
-            chunk_id=h.chunk_id,
-            rel_path=h.rel_path,
-            language=h.language,
-            start_line=h.start_line,
-            end_line=h.end_line,
-            text=h.text,
-            score=score_boost(h),
-            bm25_rank=h.bm25_rank,
-            vector_rank=h.vector_rank,
-        )
-        for h in hits
-    ]
-    rescored.sort(key=lambda h: h.score, reverse=True)
-    return rescored
+    return _rescore(hits, score_boost)
+
+
+def boost_entrypoint_hits(hits: list[SearchHit], query: str) -> list[SearchHit]:
+    """For overview intents, prefer README / main / app entrypoints."""
+    if not hits or not is_overview_intent(query):
+        return hits
+
+    def score_fn(hit: SearchHit) -> float:
+        if is_artifact_path(hit.rel_path):
+            return hit.score
+        name = Path(hit.rel_path).name.lower()
+        parts = hit.rel_path.replace("\\", "/").split("/")
+        bonus = 0.0
+        if name in _ENTRYPOINT_NAMES or name.startswith("readme"):
+            bonus += 1.5
+        # Prefer top-level app package over deep noise.
+        if len(parts) >= 1 and parts[0] in {"app", "src"} and name.endswith(
+            (".py", ".ts", ".js", ".go", ".rs")
+        ):
+            bonus += 0.4
+        if len(parts) == 1 and name.endswith((".py", ".md", ".toml", ".json")):
+            bonus += 0.3
+        return hit.score + bonus
+
+    return _rescore(hits, score_fn)
+
+
+def refine_hits(hits: list[SearchHit], query: str, cfg: Config) -> list[SearchHit]:
+    """Demote artifacts, boost filenames/entrypoints, then relevance-filter."""
+    hits = demote_artifact_hits(hits)
+    hits = boost_filename_matches(hits, query)
+    hits = boost_entrypoint_hits(hits, query)
+    return filter_relevant(hits, cfg) or hits
 
 
 def hits_look_weak(hits: list[SearchHit], cfg: Config) -> bool:
@@ -139,10 +256,13 @@ def hits_look_weak(hits: list[SearchHit], cfg: Config) -> bool:
 
 
 def detect_ambiguity(hits: list[SearchHit], query: str) -> bool:
-    """True when multiple same-named files appear among top hits."""
-    if not hits:
+    """True only for real basename collisions (or named-file miss).
+
+    Overview / meta questions never count as ambiguous here — clarifier
+    must not interrupt \"explain this project\".
+    """
+    if not hits or is_overview_intent(query):
         return False
-    from collections import Counter
 
     basenames = [Path(h.rel_path).name.lower() for h in hits[:8]]
     counts = Counter(basenames)
@@ -161,14 +281,18 @@ def request_clarification(
     hits: list[SearchHit],
     cfg: Config,
 ) -> dict | None:
-    """Ask the LLM for a short MCQ clarification structure."""
+    """Ask the LLM for a short MCQ clarification structure.
+
+    Returns None when the model says the question is clear
+    (``ambiguous: false``) or the reply is unusable.
+    """
     preview = "\n".join(
         f"- {h.rel_path}:{h.start_line}-{h.end_line}" for h in hits[:6]
     ) or "(no strong matches)"
     user = (
         f"User question: {query}\n\n"
         f"Top retrieved paths:\n{preview}\n\n"
-        "If the question is ambiguous, reply with JSON only."
+        "Reply with JSON only."
     )
     messages = [
         {"role": "system", "content": CLARIFY_PROMPT},
@@ -180,6 +304,8 @@ def request_clarification(
         return None
     data = _extract_json_object(raw)
     if not data:
+        return None
+    if data.get("ambiguous") is False:
         return None
     options = data.get("options") or []
     if not isinstance(options, list) or len(options) < 2:
@@ -219,7 +345,6 @@ def pick_clarification(
         except Exception:
             pass
 
-    # Non-TTY or questionary unavailable: print options, do not guess.
     console.print(f"[yellow]{question}[/yellow]")
     for i, opt in enumerate(options, start=1):
         console.print(f"  {i}. {opt}")
@@ -247,26 +372,27 @@ def retrieve_for_question(
     console = console or Console()
     search_query = query
     if prior_user_turns:
-        # Light context: append last user turn for follow-ups.
         search_query = f"{prior_user_turns[-1]} {query}".strip()
 
-    queries = [search_query]
+    overview = is_overview_intent(query)
+
     if llm is not None:
         normalized, alts = rewrite_query(llm, search_query, cfg)
         queries = [normalized] + [a for a in alts if a not in {normalized}]
         effective = normalized
+        hits = search_multi(idx, queries, cfg)
     else:
         effective = query
         hits = search(idx, search_query, cfg)
-        hits = boost_filename_matches(hits, search_query)
-        return filter_relevant(hits, cfg) or hits, effective
 
-    hits = search_multi(idx, queries, cfg)
-    hits = boost_filename_matches(hits, effective)
-    hits = filter_relevant(hits, cfg) or hits
+    hits = refine_hits(hits, effective if llm else search_query, cfg)
 
-    needs_clarify = allow_clarify and (
-        hits_look_weak(hits, cfg) or detect_ambiguity(hits, effective)
+    # Clarify only on real basename collisions — never for overview/meta Qs,
+    # and never solely because hits look weak on a broad question.
+    needs_clarify = (
+        allow_clarify
+        and not overview
+        and detect_ambiguity(hits, effective)
     )
     if needs_clarify and llm is not None:
         clarification = request_clarification(llm, query, hits, cfg)
@@ -275,7 +401,6 @@ def retrieve_for_question(
             if choice:
                 effective = f"{effective} — focusing on: {choice}"
                 hits = search_multi(idx, [effective, choice], cfg)
-                hits = boost_filename_matches(hits, effective)
-                hits = filter_relevant(hits, cfg) or hits
+                hits = refine_hits(hits, effective, cfg)
 
     return hits, effective

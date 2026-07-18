@@ -73,3 +73,19 @@ def test_ask_joins_trailing_args(project: Path, monkeypatch: pytest.MonkeyPatch)
     )
     assert r.exit_code == 0, r.output
     assert "app.py" in r.output
+
+
+def test_ask_without_question_opens_chat(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = {"n": 0}
+
+    def fake_chat(root, cfg, thread_name="default"):
+        called["n"] += 1
+        assert root == project.resolve()
+
+    monkeypatch.setattr("documind.chat.run_chat", fake_chat)
+    r = runner.invoke(app, ["ask", "--path", str(project)])
+    assert r.exit_code == 0, r.output
+    assert called["n"] == 1

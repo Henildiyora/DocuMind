@@ -16,11 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import (
-    IGNORE_DIRS,
     IGNORE_FILE_GLOBS,
     IGNORE_FILES,
     SUPPORTED_EXTENSIONS,
     Config,
+    is_ignored_dirname,
 )
 
 LANG_BY_EXT: dict[str, str] = {
@@ -99,7 +99,7 @@ def iter_source_files(root: Path, max_bytes: int) -> Iterator[Path]:
     """Yield candidate source files under `root`, honoring ignore rules."""
     root = root.resolve()
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in IGNORE_DIRS and not d.startswith(".")]
+        dirnames[:] = [d for d in dirnames if not is_ignored_dirname(d)]
         for fname in filenames:
             if fname.startswith("."):
                 continue
