@@ -27,6 +27,7 @@ func newDoctorCmd() *cobra.Command {
 			cfg := config.Load()
 
 			cliui.Info("%s", cliui.Bold("DocuMind doctor"))
+			checkPathConflicts()
 			checkEnvironment(cfg)
 			checkConfig(cfg)
 			checkIndex(root, cfg)
@@ -41,6 +42,52 @@ func newDoctorCmd() *cobra.Command {
 func ok(msg string, args ...any)   { cliui.Success("  "+msg, args...) }
 func warn(msg string, args ...any) { cliui.Warn("  "+msg, args...) }
 func note(msg string, args ...any) { cliui.Info("  %s", fmt.Sprintf(cliui.Dim(msg), args...)) }
+
+// checkPathConflicts warns when more than one `documind` is resolvable on PATH.
+// The common case is a leftover Python install (pipx puts it in ~/.local/bin)
+// shadowing or being shadowed by the Go binary, which silently makes the user
+// run the wrong tool. We list the resolved paths and the one that actually wins.
+func checkPathConflicts() {
+	cliui.Info("%s", cliui.Bold("PATH"))
+	var found []string
+	seen := map[string]bool{}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		cand := filepath.Join(dir, "documind")
+		info, err := os.Stat(cand)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		// Resolve symlinks so pipx shims are de-duplicated.
+		real := cand
+		if r, err := filepath.EvalSymlinks(cand); err == nil {
+			real = r
+		}
+		if seen[real] {
+			continue
+		}
+		seen[real] = true
+		found = append(found, cand)
+	}
+	switch {
+	case len(found) == 0:
+		note("documind is not on PATH (running from an explicit path).")
+	case len(found) == 1:
+		ok("Single documind on PATH: %s", found[0])
+	default:
+		warn("Multiple documind binaries on PATH; the first one wins:")
+		for i, p := range found {
+			marker := ""
+			if i == 0 {
+				marker = "  <- used"
+			}
+			note("- %s%s", p, marker)
+		}
+		note("If a stale Python build is interfering, remove it: pipx uninstall documind")
+	}
+}
 
 func checkEnvironment(cfg config.Config) {
 	cliui.Info("%s", cliui.Bold("Environment"))

@@ -60,21 +60,63 @@ type Decision struct {
 // overviewRe matches broad project-overview / structural questions. Ported and
 // expanded from is_overview_intent in query_understand.py to also catch folder
 // and directory counting.
-var overviewRe = regexp.MustCompile(`(?i)\b(` +
-	`how\s+many\s+(files|folders|directories|dirs|packages|modules|lines)|` +
-	`(project|repo|repository|codebase)\s+(structure|overview|layout)|` +
-	`directory\s+structure|folder\s+structure|` +
-	`explain\s+(me\s+)?(this\s+)?(project|repo|repository|codebase)|` +
-	`what\s+is\s+this(\s+(project|repo|repository|codebase))?|` +
-	`how\s+does\s+this\s+(project|repo|repository|codebase)\s+work|` +
-	`overview|summarize\s+(this\s+)?(project|repo|repository|codebase)|` +
-	`tell\s+me\s+about\s+(this\s+)?(project|repo|repository|codebase)|` +
-	`what\s+(languages|does\s+this\s+(app|repo|codebase|project)\s+do)` +
-	`)\b`)
+//
+// The tricky part is casual phrasing: users write "explain me the project",
+// "what does this do", "what's this about", etc. We therefore allow optional
+// filler words (me/us/the/this/a) between the verb and the subject noun, and add
+// several intent-only patterns that do not need a subject at all.
+//
+// subject = project | repo | repository | codebase | code | app | application |
+//           thing | it | this
+var overviewRe = regexp.MustCompile(`(?i)(` +
+	// counting questions
+	`how\s+many\s+(files|folders|directories|dirs|packages|modules|lines)\b|` +
+	// structure / layout
+	`\b(project|repo|repository|codebase)\s+(structure|overview|layout|summary)\b|` +
+	`\b(directory|folder|file)\s+structure\b|` +
+	// "explain/describe/summarize/tell me about [fillers] <subject>"
+	`\b(explain|describe|summar(y|ize|ise)|walk\s+me\s+through|tell\s+me\s+about|give\s+me\s+an?\s+overview\s+of)\b(\s+(me|us|the|this|a|an|of|about))*\s+(project|repo|repository|codebase|code|app|application|thing|it|this)\b|` +
+	// "what is/what's this [project] (about/for)"
+	`\bwhat(?:'?s| is| are)\b(\s+(the|this|it))*\s+(project|repo|repository|codebase|code|app|application|this|it)\b|` +
+	`\bwhat(?:'?s| is)\s+(this|it)\s+(about|for|doing)\b|` +
+	// "what does this/it/the app do"
+	`\bwhat\s+does\s+(this|it|the\s+(app|project|repo|code|codebase))\b.*\bdo\b|` +
+	// "how does this project work" / "how do I run/use/start this"
+	`\bhow\s+does\s+(this|it|the\s+(app|project|repo|code|codebase))\b.*\bwork\b|` +
+	`\bhow\s+(do|can)\s+(i|we|you)\s+(run|use|start|build|set\s*up)\b(\s+(this|it|the\s+(app|project|repo)))?\b|` +
+	`\bgetting\s+started\b|` +
+	// bare intent words
+	`\boverview\b|` +
+	`\bwhat\s+languages\b` +
+	`)`)
 
 // IsOverviewIntent reports whether a query is a broad structural/overview ask.
+// This is the union of "explain the project" intent and pointed structural asks
+// (counts, language breakdown, structure). It drives routing to Structural and
+// suppression of the clarifier.
 func IsOverviewIntent(query string) bool {
 	return overviewRe.MatchString(query)
+}
+
+// explainRe matches only the "explain / summarize / what is this / what does it
+// do" subset - questions that want a friendly prose overview rather than a bare
+// count. Counting questions ("how many files") deliberately do NOT match here.
+var explainRe = regexp.MustCompile(`(?i)(` +
+	`\b(explain|describe|summar(y|ize|ise)|walk\s+me\s+through|tell\s+me\s+about|give\s+me\s+an?\s+overview\s+of)\b(\s+(me|us|the|this|a|an|of|about))*\s+(project|repo|repository|codebase|code|app|application|thing|it|this)\b|` +
+	`\bwhat(?:'?s| is| are)\b(\s+(the|this|it))*\s+(project|repo|repository|codebase|code|app|application|this|it)\b|` +
+	`\bwhat(?:'?s| is)\s+(this|it)\s+(about|for|doing)\b|` +
+	`\bwhat\s+does\s+(this|it|the\s+(app|project|repo|code|codebase))\b.*\bdo\b|` +
+	`\bhow\s+does\s+(this|it|the\s+(app|project|repo|code|codebase))\b.*\bwork\b|` +
+	`\bhow\s+(do|can)\s+(i|we|you)\s+(run|use|start|build|set\s*up)\b|` +
+	`\bgetting\s+started\b|` +
+	`\boverview\b|` +
+	`\b(project|repo|repository|codebase)\s+summary\b` +
+	`)`)
+
+// IsExplainIntent reports whether a query wants a friendly project overview (as
+// opposed to a pointed count/structure fact).
+func IsExplainIntent(query string) bool {
+	return explainRe.MatchString(query)
 }
 
 // Classify determines the category for a query. Heuristics decide the common

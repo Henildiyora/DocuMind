@@ -149,6 +149,24 @@ func sortByQuality(specs []Spec) {
 	}
 }
 
+// familyPref ranks families by how well they follow DocuMind's "explain, cite,
+// do not dump code" instructions at small sizes. Higher is preferred. Used only
+// as a tiebreak within the same quality tier and RAM band, so it never picks a
+// heavier or lower-quality model - it just favors a better instruction-follower
+// (e.g. qwen2.5-coder over phi3.5 at the same ~4 GB tier).
+func familyPref(family string) int {
+	switch family {
+	case "Qwen2.5 Coder":
+		return 3
+	case "Llama 3.2", "Llama 3.1":
+		return 2
+	case "Gemma 3":
+		return 1
+	default: // Phi 3.5, custom, etc.
+		return 0
+	}
+}
+
 // less reports whether a should sort AFTER b (i.e. a is "smaller/worse").
 func less(a, b Spec) bool {
 	ra, rb := tradeoffRank[a.Tradeoff], tradeoffRank[b.Tradeoff]
@@ -157,6 +175,9 @@ func less(a, b Spec) bool {
 	}
 	if a.RAMGb != b.RAMGb {
 		return a.RAMGb < b.RAMGb
+	}
+	if fa, fb := familyPref(a.Family), familyPref(b.Family); fa != fb {
+		return fa < fb
 	}
 	return a.SizeGB < b.SizeGB
 }

@@ -58,6 +58,17 @@ func TestOverviewIntent(t *testing.T) {
 		"give me an overview",
 		"project structure",
 		"what languages are used",
+		// Casual phrasings that previously fell through to content Q&A.
+		"can you explain me the project",
+		"explain me the project",
+		"can you just simply explain the project what is it about what is it doing",
+		"what does this do",
+		"what does the app do",
+		"what's this about",
+		"what is it about",
+		"how do I run this",
+		"walk me through the codebase",
+		"summarize the repo",
 	}
 	for _, q := range overview {
 		if !IsOverviewIntent(q) {

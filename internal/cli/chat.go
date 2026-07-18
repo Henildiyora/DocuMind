@@ -150,7 +150,7 @@ func chatTurn(root string, cfg config.Config, bundle *retrieverBundle, client *o
 			return err
 		}
 		cliui.Info("%s", cliui.Bold("documind"))
-		messages := withHistory(thread, historyTurns, prompts.BuildStructuralMessages(user, facts.Summary()))
+		messages := withHistory(thread, historyTurns, structuralMessages(user, facts.Summary()))
 		answer, err = streamAnswer(client, messages, cfg)
 		if err != nil {
 			return err

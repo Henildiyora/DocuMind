@@ -120,9 +120,19 @@ func runStructural(root string, cfg config.Config, query string, client *ollama.
 		return nil
 	}
 	cliui.Info("%s %s", cliui.Bold("Answer"), cliui.Dim("(local model: "+cfg.Model+")"))
-	messages := prompts.BuildStructuralMessages(query, facts.Summary())
+	messages := structuralMessages(query, facts.Summary())
 	_, err = streamAnswer(client, messages, cfg)
 	return err
+}
+
+// structuralMessages picks the right prompt for a structural question: a friendly
+// overview for "explain the project"-style intent, or a terse factual answer for
+// pointed asks like "how many folders".
+func structuralMessages(query, facts string) []ollama.Message {
+	if router.IsExplainIntent(query) {
+		return prompts.BuildOverviewMessages(query, facts)
+	}
+	return prompts.BuildStructuralMessages(query, facts)
 }
 
 // runContentQA handles the default retrieval path with an optional clarify loop.
