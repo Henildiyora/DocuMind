@@ -108,13 +108,40 @@ func (c *Client) ModelAvailable(model string) bool {
 	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
 		return false
 	}
-	base := func(s string) string { return strings.SplitN(s, ":", 2)[0] }
 	for _, m := range tags.Models {
 		name := m.Model
 		if name == "" {
 			name = m.Name
 		}
-		if name == target || base(name) == base(target) {
+		if modelMatches(name, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// modelMatches reports whether an installed model `name` (as returned by
+// /api/tags, always fully-qualified like "qwen2.5-coder:3b" or "x:latest")
+// satisfies the requested `target`.
+//
+//   - target WITH a tag (contains ":") must match exactly. This is the bug fix:
+//     "qwen2.5-coder:3b" must NOT be satisfied by "qwen2.5-coder:1.5b".
+//   - target WITHOUT a tag matches "<target>:latest" or any tag of the same
+//     base, so bare "nomic-embed-text" still matches "nomic-embed-text:latest".
+func modelMatches(name, target string) bool {
+	name = strings.TrimSpace(name)
+	target = strings.TrimSpace(target)
+	if name == "" || target == "" {
+		return false
+	}
+	if name == target {
+		return true
+	}
+	if !strings.Contains(target, ":") {
+		if name == target+":latest" {
+			return true
+		}
+		if strings.SplitN(name, ":", 2)[0] == target {
 			return true
 		}
 	}
