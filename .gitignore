@@ -1,29 +1,13 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[codz]
-*$py.class
+# Go build artifacts
+/bin/
+*.test
+*.out
+coverage.out
 
-# C extensions
+# C extensions (tree-sitter / cgo)
 *.so
-
-# Distribution / packaging
-build/
-dist/
-*.egg-info/
-*.egg
-MANIFEST
-
-# Virtual environments
-.venv/
-venv/
-env/
-DocuMind_venv/
-
-# Caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-hf_cache/
+*.o
+*.a
 
 # DocuMind per-project index (stores embeddings + BM25 + sqlite)
 .documind/
@@ -45,3 +29,12 @@ Thumbs.db
 # Env / secrets (none required today, but keep blocked)
 .env
 .env.*
+
+# Legacy Python leftovers (kept so a mixed checkout stays clean)
+__pycache__/
+*.py[codz]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
