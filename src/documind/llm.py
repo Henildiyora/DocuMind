@@ -66,13 +66,20 @@ class OllamaClient:
         self,
         messages: list[dict],
         model: str | None = None,
+        keep_alive: str | None = None,
     ) -> Iterator[str]:
-        """Stream response tokens from the chat endpoint."""
+        """Stream response tokens from the chat endpoint.
+
+        ``keep_alive`` controls how long Ollama keeps the model loaded in
+        memory after the response (default from config, usually ``5m``).
+        Pass ``\"0\"`` to unload immediately and minimize idle RAM use.
+        """
         target = model or self.cfg.model
         options = {
             "temperature": self.cfg.llm_temperature,
             "num_ctx": self.cfg.llm_num_ctx,
         }
+        ka = keep_alive if keep_alive is not None else self.cfg.keep_alive
         try:
             client = self._client()
             stream = client.chat(
@@ -80,6 +87,7 @@ class OllamaClient:
                 messages=messages,
                 stream=True,
                 options=options,
+                keep_alive=ka,
             )
         except Exception as exc:
             raise LLMError(
@@ -102,6 +110,11 @@ class OllamaClient:
         except Exception as exc:
             raise LLMError(f"LLM streaming failed: {exc}") from exc
 
-    def chat(self, messages: list[dict], model: str | None = None) -> str:
+    def chat(
+        self,
+        messages: list[dict],
+        model: str | None = None,
+        keep_alive: str | None = None,
+    ) -> str:
         """Non-streaming convenience wrapper."""
-        return "".join(self.chat_stream(messages, model=model))
+        return "".join(self.chat_stream(messages, model=model, keep_alive=keep_alive))

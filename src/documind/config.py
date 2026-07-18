@@ -95,6 +95,11 @@ class Config:
     ollama_base_url: str = "http://localhost:11434"
     llm_temperature: float = 0.1
     llm_num_ctx: int = 8192
+    keep_alive: str = "5m"  # unload model from RAM after idle (Ollama keep_alive)
+    # True only after a successful `documind setup` (not mere Config defaults).
+    setup_done: bool = False
+    # After declining the post-index Q&A offer, stay quiet on future indexes.
+    offer_setup_after_index: bool = True
 
     # Embedding model (fastembed ONNX, no torch required)
     embedding_model: str = "BAAI/bge-small-en-v1.5"
@@ -105,6 +110,10 @@ class Config:
     rrf_k: int = 60  # constant used in Reciprocal Rank Fusion
     fuzzy_threshold: int = 82  # rapidfuzz score_cutoff (0-100)
     fuzzy_expand_per_term: int = 3
+    min_score_ratio: float = 0.35  # drop RRF hits below max_score * ratio
+
+    # Chat / ask memory
+    chat_history_turns: int = 4  # last N user+assistant pairs kept in context
 
     # Chunking
     chunk_size: int = 800

@@ -6,7 +6,7 @@ add-on. Search and index work regardless.
 
 Responsibilities:
 - Scan a target project to count files and lines of code.
-- Recommend a model tier based on project size.
+- Recommend a model based on hardware RAM (and project size as a tie-break).
 - Save the chosen model to `~/.config/documind/config.toml`.
 - If requested, auto-start Ollama (without forcing a second terminal) and
   pull the chosen model.
@@ -14,7 +14,6 @@ Responsibilities:
 
 from __future__ import annotations
 
-import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,15 +25,20 @@ from rich.table import Table
 
 from .chunker import iter_source_files
 from .config import Config, load_config, update_user_config, user_config_path
+from .errors import ModelPullFailed, OllamaNotInstalled, OllamaNotRunning
 from .llm import LLMError, OllamaClient
 from .models import (
     MODEL_TIERS,
     TIER_ORDER,
     ModelSpec,
+    detect_gpu_hint,
+    detect_system_ram_gb,
+    filter_catalog_for_ram,
+    recommend_for_hardware,
     recommend_tier,
     tier_info,
 )
-from .ollama_daemon import ensure_daemon_running, install_hint
+from .ollama_daemon import ensure_daemon_running, install_hint, ollama_installed
 
 
 @dataclass
@@ -64,6 +68,44 @@ def scan_project(root: Path, cfg: Config | None = None) -> ProjectStats:
     return ProjectStats(file_count=files, total_loc=total_loc)
 
 
+def _render_catalog_table(
+    console: Console,
+    candidates: list[ModelSpec],
+    recommended: ModelSpec,
+    *,
+    ram_gb: float | None,
+    gpu: str | None,
+) -> None:
+    title = "Models that fit this machine  (all free, all local)"
+    if ram_gb is not None:
+        title += f"  |  ~{ram_gb:.0f} GB RAM"
+    if gpu:
+        title += f"  |  {gpu}"
+    table = Table(title=title, header_style="bold")
+    table.add_column("#")
+    table.add_column("Model")
+    table.add_column("Size")
+    table.add_column("RAM")
+    table.add_column("Tradeoff")
+    table.add_column("Best for")
+
+    for i, m in enumerate(candidates, start=1):
+        marker = " [green](recommended)[/green]" if m.name == recommended.name else ""
+        table.add_row(
+            str(i),
+            f"{m.name}{marker}",
+            f"{m.size_gb:.1f} GB",
+            f"~{m.ram_gb:.0f} GB",
+            m.tradeoff,
+            m.best_for,
+        )
+    console.print(table)
+    console.print(
+        "[dim]Tip: any Ollama tag works via `--model <tag>`. "
+        "List the full catalog with `documind models`.[/dim]"
+    )
+
+
 def _render_tier_table(console: Console, recommended: str) -> None:
     table = Table(title="Available model tiers  (all free, all local)", header_style="bold")
     table.add_column("Tier")
@@ -80,10 +122,6 @@ def _render_tier_table(console: Console, recommended: str) -> None:
             m.best_for,
         )
     console.print(table)
-    console.print(
-        "[dim]Tip: any Ollama tag works via `--model <tag>` "
-        "(e.g. --model qwen2.5-coder:14b).[/dim]"
-    )
 
 
 def _select_spec(
@@ -99,26 +137,67 @@ def _select_spec(
             tier="custom",
             name=model,
             size_gb=0.0,
+            ram_gb=0.0,
             family="custom",
             best_for="User-specified model",
+            tradeoff="balanced",
         )
-
-    recommended = recommend_tier(stats.file_count, stats.total_loc)
 
     if tier:
         return tier_info(tier)
 
-    _render_tier_table(console, recommended)
-    if yes or not sys.stdin.isatty():
-        console.print(f"[green]Using recommended tier:[/green] {recommended}")
-        return tier_info(recommended)
-
-    choice = Prompt.ask(
-        "Pick a tier",
-        choices=list(TIER_ORDER),
-        default=recommended,
+    ram_gb = detect_system_ram_gb()
+    gpu = detect_gpu_hint()
+    recommended = recommend_for_hardware(
+        ram_gb, stats.file_count, stats.total_loc
     )
-    return tier_info(choice)
+    candidates = filter_catalog_for_ram(ram_gb)
+
+    if ram_gb is None:
+        # Fall back to classic tiny/small/deep table when RAM unknown.
+        classic = recommend_tier(stats.file_count, stats.total_loc)
+        _render_tier_table(console, classic)
+        if yes or not sys.stdin.isatty():
+            console.print(f"[green]Using recommended tier:[/green] {classic}")
+            return tier_info(classic)
+        choice = Prompt.ask(
+            "Pick a tier",
+            choices=list(TIER_ORDER),
+            default=classic,
+        )
+        return tier_info(choice)
+
+    _render_catalog_table(
+        console, candidates, recommended, ram_gb=ram_gb, gpu=gpu
+    )
+    if yes or not sys.stdin.isatty():
+        console.print(f"[green]Using recommended model:[/green] {recommended.name}")
+        return recommended
+
+    # Let the user pick by number or by exact tag.
+    default = recommended.name
+    choice = Prompt.ask(
+        "Pick a model tag (or number)",
+        default=default,
+    )
+    choice = choice.strip()
+    if choice.isdigit():
+        idx = int(choice) - 1
+        if 0 <= idx < len(candidates):
+            return candidates[idx]
+    for m in candidates:
+        if m.name == choice:
+            return m
+    # Allow typing any tag even if filtered out.
+    return ModelSpec(
+        tier="custom",
+        name=choice,
+        size_gb=0.0,
+        ram_gb=0.0,
+        family="custom",
+        best_for="User-specified model",
+        tradeoff="balanced",
+    )
 
 
 def _should_pull(pull: bool | None, yes: bool, console: Console, spec: ModelSpec) -> bool:
@@ -130,10 +209,10 @@ def _should_pull(pull: bool | None, yes: bool, console: Console, spec: ModelSpec
     if yes:
         return True
     if not sys.stdin.isatty():
-        # Non-interactive default: don't burn bandwidth unless asked.
         return False
+    size = f"~{spec.size_gb:.1f} GB, " if spec.size_gb else ""
     return Confirm.ask(
-        f"Pull [bold]{spec.name}[/bold] now? (~{spec.size_gb:.1f} GB, free, local)",
+        f"Pull [bold]{spec.name}[/bold] now? ({size}free, local)",
         default=True,
     )
 
@@ -144,6 +223,7 @@ def run_setup(
     model: str | None = None,
     yes: bool = False,
     pull: bool | None = None,
+    keep_alive: str | None = None,
 ) -> int:
     """Interactive or scripted setup flow. Returns an exit code.
 
@@ -160,12 +240,17 @@ def run_setup(
         )
     )
 
-    # 1) Scan project
     console.print(f"Scanning [cyan]{root}[/cyan]...")
     stats = scan_project(root)
     console.print(f"Found [bold]{stats.summary}[/bold]")
 
-    # 2) Pick model
+    ram = detect_system_ram_gb()
+    if ram is not None:
+        console.print(f"Detected [bold]~{ram:.0f} GB[/bold] system RAM")
+    gpu = detect_gpu_hint()
+    if gpu:
+        console.print(f"GPU hint: [bold]{gpu}[/bold]")
+
     try:
         spec = _select_spec(stats, tier, model, yes, console)
     except ValueError as exc:
@@ -175,16 +260,27 @@ def run_setup(
         f"Selected model: [bold cyan]{spec.name}[/bold cyan] ({spec.family})"
     )
 
-    # 3) Persist choice (always succeeds, independent of Ollama)
-    cfg_path = update_user_config({"model": spec.name})
+    updates: dict = {"model": spec.name, "setup_done": True}
+    if keep_alive is not None:
+        updates["keep_alive"] = keep_alive
+    cfg_path = update_user_config(updates)
     console.print(f"Saved to [dim]{cfg_path}[/dim]")
+    if keep_alive is not None:
+        console.print(
+            f"[dim]keep_alive={keep_alive} "
+            f"(model unloads after idle to save RAM/CPU/energy)[/dim]"
+        )
+    else:
+        console.print(
+            "[dim]Default keep_alive=5m — Ollama unloads the model after idle "
+            "so it does not burn RAM forever. Override with --keep-alive.[/dim]"
+        )
 
     console.print(
         "[green]Ready.[/green] Search and index already work. "
         "The rest is only needed for [bold]documind ask[/bold] / [bold]documind chat[/bold]."
     )
 
-    # 4) Decide whether to pull
     want_pull = _should_pull(pull, yes, console, spec)
     if not want_pull:
         console.print(
@@ -199,8 +295,9 @@ def run_setup(
         )
         return 0
 
-    # 5) Make Ollama available (install check + auto-start)
-    if shutil.which("ollama") is None:
+    if not ollama_installed():
+        if pull is True:
+            raise OllamaNotInstalled()
         console.print(
             Panel(
                 "Ollama is not installed. Install it with:\n\n"
@@ -211,11 +308,13 @@ def run_setup(
                 border_style="yellow",
             )
         )
-        return 0 if pull is None else 2
+        return 0
 
     cfg = load_config()
     status = ensure_daemon_running(cfg)
     if not status.running:
+        if pull is True:
+            raise OllamaNotRunning()
         console.print(
             Panel(
                 "Ollama binary found but the daemon couldn't be started automatically.\n\n"
@@ -226,11 +325,10 @@ def run_setup(
                 border_style="yellow",
             )
         )
-        return 0 if pull is None else 2
+        return 0
     if status.how != "already":
         console.print(f"[green]Started Ollama[/green] via {status.how}.")
 
-    # 6) Pull the model
     llm = OllamaClient(cfg)
     if llm.model_available(spec.name):
         console.print(f"[green]Model already pulled:[/green] {spec.name}")
@@ -240,20 +338,23 @@ def run_setup(
             llm.pull(spec.name)
             console.print(f"[green]Pulled[/green] {spec.name}")
         except LLMError as exc:
+            if pull is True:
+                raise ModelPullFailed(spec.name, str(exc)) from exc
             console.print(f"[red]Failed to pull {spec.name}:[/red] {exc}")
             return 2
 
-    # 7) Done
     console.print(
         Panel(
             "DocuMind is fully set up.\n\n"
             f"Model: [bold]{spec.name}[/bold]\n"
-            f"Config: [dim]{user_config_path()}[/dim]\n\n"
+            f"Config: [dim]{user_config_path()}[/dim]\n"
+            f"keep_alive: [bold]{load_config().keep_alive}[/bold] "
+            "(unloads after idle — lower RAM/energy use)\n\n"
             "Next steps:\n"
             "  cd /path/to/any/project\n"
             "  documind index\n"
             "  documind search \"your query\"\n"
-            "  documind ask \"how does X work?\"",
+            "  documind ask why does X work",
             title="All set",
             border_style="green",
         )

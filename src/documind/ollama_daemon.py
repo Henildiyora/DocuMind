@@ -99,7 +99,7 @@ def ensure_daemon_running(cfg: Config) -> DaemonStatus:
     if _ping(cfg):
         return DaemonStatus(True, "already")
 
-    if not shutil.which("ollama"):
+    if not ollama_installed():
         return DaemonStatus(False, "missing")
 
     system = platform.system()
@@ -124,3 +124,24 @@ def install_hint() -> str:
     if system == "Linux":
         return "curl -fsSL https://ollama.com/install.sh | sh"
     return "See https://ollama.com/download"
+
+
+def ollama_installed() -> bool:
+    """Return True if the ``ollama`` binary is on PATH.
+
+    Checks ``which`` first, then tries ``ollama --version`` so a broken
+    stub does not look like a working install.
+    """
+    if shutil.which("ollama") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["ollama", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False

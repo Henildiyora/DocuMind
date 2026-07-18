@@ -222,6 +222,73 @@ def search(
     return hits
 
 
+def search_multi(
+    idx: DocuMindIndex,
+    queries: list[str],
+    cfg: Config,
+    top_k: int | None = None,
+) -> list[SearchHit]:
+    """Run ``search`` for each query and fuse the ranked id lists with RRF."""
+    k = top_k or cfg.top_k
+    cleaned = [q.strip() for q in queries if q and q.strip()]
+    if not cleaned:
+        return []
+    if len(cleaned) == 1:
+        return search(idx, cleaned[0], cfg, top_k=k)
+
+    rankings: list[list[str]] = []
+    for q in cleaned:
+        hits = search(idx, q, cfg, top_k=max(k, 12))
+        rankings.append([h.chunk_id for h in hits])
+
+    if not any(rankings):
+        return []
+
+    merged = _rrf_merge(rankings, cfg.rrf_k, k)
+    lookup = idx.chunks_by_ids([cid for cid, _, _ in merged])
+    hits: list[SearchHit] = []
+    for cid, score, per_ranks in merged:
+        row = lookup.get(cid)
+        if not row:
+            continue
+        hits.append(
+            SearchHit(
+                chunk_id=cid,
+                rel_path=row["rel_path"],
+                language=row["language"],
+                start_line=row["start_line"],
+                end_line=row["end_line"],
+                text=row["text"],
+                score=score,
+                bm25_rank=per_ranks[0] if per_ranks else None,
+                vector_rank=per_ranks[1] if len(per_ranks) > 1 else None,
+            )
+        )
+    return hits
+
+
+def filter_relevant(
+    hits: list[SearchHit],
+    cfg: Config,
+    *,
+    min_ratio: float | None = None,
+) -> list[SearchHit]:
+    """Drop hits whose RRF score is below ``max_score * min_ratio``.
+
+    Used by ask/chat after fusion so weak chunks are not fed to the LLM.
+    Zero-model ``documind search`` does not call this and keeps top-K as-is.
+    """
+    if not hits:
+        return []
+    ratio = cfg.min_score_ratio if min_ratio is None else min_ratio
+    max_score = max(h.score for h in hits)
+    if max_score <= 0:
+        return hits
+    threshold = max_score * ratio
+    kept = [h for h in hits if h.score >= threshold]
+    return kept or hits[:1]
+
+
 def format_snippet(hit: SearchHit, cfg: Config) -> str:
     """Trim a hit's text for display while preserving leading code context."""
     text = hit.text.rstrip()

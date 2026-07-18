@@ -29,6 +29,31 @@ Answer the question using only the context above. Cite files like \
 `path/to/file.py:12-34` when referring to code."""
 
 
+QUERY_REWRITE_PROMPT = """You clean up search queries for a code search engine.
+
+Given a raw user question, reply with JSON only (no markdown) of the form:
+{"normalized": "...", "alternates": ["...", "..."]}
+
+Rules:
+- Fix obvious typos and grammar in "normalized".
+- Infer the search intent (e.g. "docker file" -> "Dockerfile contents").
+- Provide 2-3 short alternate phrasings that would help keyword/semantic search.
+- Do not answer the question; only rewrite it for retrieval.
+"""
+
+
+CLARIFY_PROMPT = """You help disambiguate vague questions about a codebase.
+
+Reply with JSON only (no markdown):
+{"question": "short clarifying question?", "options": ["option A", "option B", ...]}
+
+Rules:
+- 2 to 4 concrete options the user can pick with arrow keys.
+- Options should name files, features, or interpretations — not vague advice.
+- If the question is already clear, still offer the most likely interpretations.
+"""
+
+
 def build_messages(query: str, context: str) -> list[dict]:
     """Build Ollama-style chat messages for a grounded RAG answer."""
     return [

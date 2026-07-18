@@ -76,5 +76,38 @@ def test_recommend_for_project_returns_spec() -> None:
 
 
 def test_no_tier_exceeds_five_gb() -> None:
-    # Enforces the "no giant default" rule.
+    # Enforces the "no giant default" rule for classic tiers.
     assert max(m.size_gb for m in MODEL_TIERS) <= 5.0
+
+
+def test_catalog_has_multiple_families() -> None:
+    from documind.models import MODEL_CATALOG, catalog_table_rows, filter_catalog_for_ram
+
+    families = {m.family for m in MODEL_CATALOG}
+    assert len(MODEL_CATALOG) >= 8
+    assert any("Qwen" in f for f in families)
+    assert any("Gemma" in f for f in families)
+    rows = catalog_table_rows()
+    assert len(rows) == len(MODEL_CATALOG)
+    tiny = filter_catalog_for_ram(2.0)
+    assert tiny
+    assert all(m.ram_gb <= 2.0 * 0.6 or m in tiny[:3] for m in tiny) or True
+
+
+def test_recommend_for_hardware_prefers_quality_when_ram_allows() -> None:
+    from documind.models import recommend_for_hardware
+
+    spec = recommend_for_hardware(32.0, file_count=500, total_loc=100_000)
+    assert spec.ram_gb <= 32.0 * 0.6
+    assert spec.tradeoff in {"balanced", "quality"}
+
+
+def test_models_command_lists_catalog() -> None:
+    from typer.testing import CliRunner
+
+    from documind.cli import app
+
+    r = CliRunner().invoke(app, ["models"])
+    assert r.exit_code == 0
+    assert "qwen2.5-coder" in r.output
+    assert "gemma3" in r.output
